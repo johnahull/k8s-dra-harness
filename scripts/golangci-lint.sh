@@ -63,7 +63,7 @@ function RunGolangCiLint() {
 
 	echo "Running golangci-lint"
 
-	if golangci-lint run -v --timeout 10m; then
+	if golangci-lint run -v --build-tags=integration --timeout 10m; then
 		return 0;
 	fi
 

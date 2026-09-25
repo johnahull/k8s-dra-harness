@@ -2036,6 +2036,13 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 This is the first Ginkgo suite. It checks that config loading, platform detection, clients, and discovery all work against a real cluster. It installs nothing.
 
+**Agreed adjustment:** Cluster suites use the `integration` build tag, and
+`scripts/test-runner.sh` passes `--tags=integration` to Ginkgo. This keeps
+`go test ./...` cluster-independent while preserving startup validation in
+`inittools.init()` for integration runs. Compile the smoke suite with
+`go test -tags=integration -c`. `make verify` includes integration files in
+lint and vet, but does not execute them.
+
 **Files:**
 - Create: `internal/inittools/inittools.go`, `tests/smoke/smoke_suite_test.go`, `tests/smoke/smoke_test.go`
 
@@ -2172,7 +2179,7 @@ var _ = Describe("Cluster smoke", Label("smoke"), func() {
 go get github.com/onsi/ginkgo/v2@v2.28.1 github.com/onsi/gomega@v1.39.1 github.com/golang/glog@v1.2.5
 make deps-update
 go vet ./...
-go test -c -o /dev/null ./tests/smoke/
+go test -tags=integration -c -o /dev/null ./tests/smoke/
 ```
 Expected: `go vet` prints nothing. `go test -c` compiles without errors. The suite isn't run here, because `inittools` exits fatally without a cluster.
 

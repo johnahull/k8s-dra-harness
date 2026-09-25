@@ -33,7 +33,7 @@ else
     fi
 fi
 
-cmd="ginkgo -timeout=24h --keep-going --require-suite -r"
+cmd="ginkgo -timeout=24h --keep-going --require-suite -r --tags=integration"
 
 if [[ "${TEST_VERBOSE}" == "true" ]]; then
     cmd+=" -vv"
