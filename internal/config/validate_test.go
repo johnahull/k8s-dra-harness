@@ -92,6 +92,13 @@ func TestValidate(t *testing.T) {
 			mutate:  func(c *Config) { c.DRA.Chart = "/src/chart" },
 			wantErr: "AMD_DRA_CHART requires AMD_DRA_SOURCE=helm",
 		},
+		{
+			name: "DRA chart with helm source", p: PlatformKubernetes,
+			mutate: func(c *Config) {
+				c.DRA.Source = DRASourceHelm
+				c.DRA.Chart = "/src/chart"
+			},
+		},
 	}
 
 	for _, tt := range tests {
