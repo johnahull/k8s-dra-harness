@@ -1,10 +1,13 @@
 package platform
 
 import (
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/johnahull/amd-ci/internal/config"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	fakediscovery "k8s.io/client-go/discovery/fake"
 	clienttesting "k8s.io/client-go/testing"
 )
@@ -42,5 +45,23 @@ func TestDetect(t *testing.T) {
 				t.Errorf("got %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestDetectServerGroupsError(t *testing.T) {
+	dc := fakeDiscovery()
+	dc.PrependReactor("get", "group", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errors.New("connection refused")
+	})
+
+	_, err := Detect(dc, "")
+	if err == nil {
+		t.Fatal("expected an error when ServerGroups() fails")
+	}
+	if !strings.Contains(err.Error(), "listing API groups") {
+		t.Errorf("error %q should mention \"listing API groups\"", err.Error())
+	}
+	if !strings.Contains(err.Error(), "connection refused") {
+		t.Errorf("error %q should wrap the underlying error", err.Error())
 	}
 }
