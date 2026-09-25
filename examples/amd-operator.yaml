@@ -1,0 +1,13 @@
+# Kubernetes example: use a custom operator chart and controller image.
+# Set KUBECONFIG to an existing cluster with AMD GPU nodes.
+namespace: dra-harness
+amdOperator:
+  chart: /path/to/gpu-operator/helm-charts-k8s
+  image: quay.io/my-account/amd-gpu-operator:dev
+  values:
+    deviceConfig:
+      spec:
+        driver:
+          enable: false
+        devicePlugin:
+          enableDevicePlugin: true

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/johnahull/amd-gpu-e2e/internal/config"
+	"github.com/johnahull/k8s-dra-harness/internal/config"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	fakediscovery "k8s.io/client-go/discovery/fake"

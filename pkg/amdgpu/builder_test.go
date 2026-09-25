@@ -6,7 +6,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/johnahull/amd-gpu-e2e/pkg/clients"
+	amdv1alpha1 "github.com/johnahull/k8s-dra-harness/pkg/amdgpu/v1alpha1"
+	"github.com/johnahull/k8s-dra-harness/pkg/clients"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
@@ -19,7 +20,7 @@ const (
 func newFakeClient(t *testing.T) client.Client {
 	t.Helper()
 
-	s, err := clients.NewScheme()
+	s, err := clients.NewScheme(amdv1alpha1.AddToScheme)
 	if err != nil {
 		t.Fatal(err)
 	}

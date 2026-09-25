@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 
-	amdv1alpha1 "github.com/johnahull/amd-gpu-e2e/pkg/amdgpu/v1alpha1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/kubernetes"
@@ -26,17 +25,18 @@ type Settings struct {
 	Discovery discovery.DiscoveryInterface
 }
 
-// NewScheme returns a scheme with the core Kubernetes types (including
-// resource.k8s.io/v1) and amd.com/v1alpha1.
-func NewScheme() (*runtime.Scheme, error) {
+// NewScheme returns a core Kubernetes scheme. Adapters register their own APIs.
+func NewScheme(adders ...func(*runtime.Scheme) error) (*runtime.Scheme, error) {
 	s := runtime.NewScheme()
 
 	if err := clientgoscheme.AddToScheme(s); err != nil {
 		return nil, fmt.Errorf("adding client-go scheme: %w", err)
 	}
 
-	if err := amdv1alpha1.AddToScheme(s); err != nil {
-		return nil, fmt.Errorf("adding amd.com/v1alpha1 scheme: %w", err)
+	for _, add := range adders {
+		if err := add(s); err != nil {
+			return nil, fmt.Errorf("adding adapter scheme: %w", err)
+		}
 	}
 
 	return s, nil
@@ -44,7 +44,7 @@ func NewScheme() (*runtime.Scheme, error) {
 
 // New connects using kubeconfig, falling back to $KUBECONFIG and then to
 // in-cluster config.
-func New(kubeconfig string) (*Settings, error) {
+func New(kubeconfig string, adders ...func(*runtime.Scheme) error) (*Settings, error) {
 	if kubeconfig == "" {
 		kubeconfig = os.Getenv("KUBECONFIG")
 	}
@@ -59,7 +59,7 @@ func New(kubeconfig string) (*Settings, error) {
 		return nil, fmt.Errorf("creating clientset: %w", err)
 	}
 
-	scheme, err := NewScheme()
+	scheme, err := NewScheme(adders...)
 	if err != nil {
 		return nil, err
 	}

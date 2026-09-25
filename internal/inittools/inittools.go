@@ -7,9 +7,10 @@ import (
 	"flag"
 
 	"github.com/golang/glog"
-	"github.com/johnahull/amd-gpu-e2e/internal/config"
-	"github.com/johnahull/amd-gpu-e2e/internal/platform"
-	"github.com/johnahull/amd-gpu-e2e/pkg/clients"
+	"github.com/johnahull/k8s-dra-harness/internal/config"
+	"github.com/johnahull/k8s-dra-harness/internal/platform"
+	amdv1alpha1 "github.com/johnahull/k8s-dra-harness/pkg/amdgpu/v1alpha1"
+	"github.com/johnahull/k8s-dra-harness/pkg/clients"
 	ginkgo "github.com/onsi/ginkgo/v2"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -18,7 +19,7 @@ import (
 var (
 	// APIClient provides access to the cluster.
 	APIClient *clients.Settings
-	// Config holds validated amd-gpu-e2e settings.
+	// Config holds the legacy AMD-specific settings.
 	Config *config.Config
 )
 
@@ -34,7 +35,7 @@ func init() {
 	_ = flag.Lookup("logtostderr").Value.Set("true")
 	_ = flag.Lookup("v").Value.Set(Config.VerboseLevel)
 
-	if APIClient, err = clients.New(""); err != nil {
+	if APIClient, err = clients.New("", amdv1alpha1.AddToScheme); err != nil {
 		glog.Fatalf("creating API client (check KUBECONFIG): %v", err)
 	}
 

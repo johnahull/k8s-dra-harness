@@ -2,6 +2,8 @@
 
 > This repository was later renamed to `amd-gpu-e2e`. The original name is
 > retained in this dated design document.
+>
+> Superseded by [the vendor-neutral harness design](2026-09-25-k8s-dra-harness-design.md).
 
 **Date:** 2026-09-25
 **Status:** Draft, awaiting review

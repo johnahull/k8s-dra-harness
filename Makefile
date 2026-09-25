@@ -1,5 +1,5 @@
 export GO111MODULE=on
-MODULE := github.com/johnahull/amd-gpu-e2e
+MODULE := github.com/johnahull/k8s-dra-harness
 GO_PACKAGES = $(shell go list -tags=integration ./... | grep -v /vendor/)
 # Packages under tests/ are Ginkgo suites that need a cluster; unit-test skips them.
 TEST ?= ...

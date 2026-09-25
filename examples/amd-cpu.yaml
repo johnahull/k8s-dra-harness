@@ -1,0 +1,10 @@
+# Replace these paths and registry with your checkouts and pullable registry.
+namespace: dra-harness
+registry: quay.io/my-account
+cleanup: true
+drivers:
+  - name: cpu
+    sourcePath: /path/to/dra-driver-cpu
+    # upstreamTests: [make, test-e2e]
+  - name: amd
+    sourcePath: /path/to/k8s-gpu-dra-driver
