@@ -29,7 +29,7 @@ vet pass, but the smoke and DRA suites have not been run against a live cluster.
 
 ## 3. Decide how adapters are distributed
 
-- [ ] Decide whether compiling adapter packages into the harness is sufficient
+- [x] Decide whether compiling adapter packages into the harness is sufficient
       or whether driver repositories must supply adapters independently.
 - [ ] If independent adapters are required, design a stable extension contract
       and loading mechanism before implementing one. Keep the existing built-in

@@ -17,6 +17,20 @@ The generic harness owns cluster clients, Helm releases, namespaces, DRA
 claims, readiness checks, and cleanup. An adapter should not create Kubernetes
 objects directly from `Build`, `Values`, or `Workload`.
 
+## Distribution decision
+
+Adapters remain compiled into the harness for the current project. This keeps
+the adapter set versioned with the harness, avoids runtime ABI and
+OS/architecture constraints from Go plugins, and makes the test binary's
+behavior explicit and reproducible.
+
+An external adapter can be added as a package in a fork or a coordinated
+change to this repository. If independent adapter repositories become a real
+requirement, the next design should promote the adapter contract from
+`internal/driver` to a versioned public package and build a separate harness
+binary that imports the selected adapter set. Do not introduce Go's runtime
+plugin loading as the default extension mechanism.
+
 The `example` adapter is a hardware-free reference implementation. It uses the
 [Kubernetes DRA example driver](https://github.com/kubernetes-sigs/dra-example-driver),
 which advertises mock GPUs as `gpu.example.com` and exposes `GPU_DEVICE_*`
