@@ -10,11 +10,19 @@ import (
 )
 
 func TestJSONFieldNamesMatchUpstream(t *testing.T) {
-	dc := DeviceConfig{Spec: DeviceConfigSpec{
-		Driver:       DriverSpec{Enable: ptr.To(false)},
-		DevicePlugin: DevicePluginSpec{EnableDevicePlugin: ptr.To(false)},
-		DRADriver:    DRADriverSpec{Enable: ptr.To(true), Image: "img", CmdLineArguments: map[string]string{"v": "4"}},
-	}}
+	dc := DeviceConfig{
+		Spec: DeviceConfigSpec{
+			Driver:       DriverSpec{Enable: ptr.To(false)},
+			DevicePlugin: DevicePluginSpec{EnableDevicePlugin: ptr.To(false)},
+			DRADriver:    DRADriverSpec{Enable: ptr.To(true), Image: "img", CmdLineArguments: map[string]string{"v": "4"}},
+			Selector:     map[string]string{"feature.node.kubernetes.io/amd-gpu": "true"},
+		},
+		Status: DeviceConfigStatus{
+			DevicePlugin:     DeploymentStatus{DesiredNumber: 3, AvailableNumber: 2},
+			Drivers:          DeploymentStatus{DesiredNumber: 3, AvailableNumber: 3},
+			NodeModuleStatus: map[string]ModuleStatus{"node-1": {Status: "Ready"}},
+		},
+	}
 
 	b, err := json.Marshal(dc)
 	if err != nil {
@@ -25,6 +33,13 @@ func TestJSONFieldNamesMatchUpstream(t *testing.T) {
 		`"driver":{"enable":false}`,
 		`"devicePlugin":{"enableDevicePlugin":false}`,
 		`"draDriver":{"enable":true,"image":"img","cmdLineArguments":{"v":"4"}}`,
+		`"selector":{"feature.node.kubernetes.io/amd-gpu":"true"}`,
+		`"devicePlugin":{"desiredNumber":3,"availableNumber":2}`,
+		// DeviceConfigStatus.Drivers (Go field, plural) is intentionally tagged
+		// json:"driver,omitempty" (singular) to match the upstream API. This
+		// assertion locks that mismatch in so it isn't "fixed" by accident.
+		`"driver":{"desiredNumber":3,"availableNumber":3}`,
+		`"nodeModuleStatus":{"node-1":{"status":"Ready"}}`,
 	} {
 		if !strings.Contains(string(b), want) {
 			t.Errorf("JSON %s missing %s", b, want)
