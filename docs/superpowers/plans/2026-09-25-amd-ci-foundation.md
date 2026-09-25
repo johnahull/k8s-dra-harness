@@ -24,23 +24,30 @@
 
 ---
 
-## Progress (updated 2026-09-25, mid-session handoff)
+## Progress (updated 2026-09-25)
 
-**Tasks 1-8 are DONE** (implemented, spec-reviewed, and code-quality-reviewed; see the status note under each task heading below for commit SHAs and any deferred follow-ups). **Tasks 9, 10, 11 are NOT started.**
+**Tasks 1-11 are DONE.** Tasks 9 and 10 were committed as `e0bb5f4` and
+`e4e29cc`. Task 11 reconciles the design spec in the final foundation commit.
+`go test ./...` and `make verify` passed after Tasks 9 and 10. The smoke suite
+compiled with the `integration` tag, but its live run was not completed: the
+local kubeconfig references missing Minikube certificates.
 
 Repo: `~/redhat/amd/amd-ci`, all work committed directly to `main` (explicitly approved by the user for this repo — no worktree/feature branch was used). Latest commit as of this handoff: `fd77b79` ("feat(amdgpu): add DeviceConfig builder with merge-patch updates").
 
-This work was executed using the `superpowers:subagent-driven-development` workflow: a fresh subagent per task, with a spec-compliance review and a code-quality review after each (both independently re-verifying the implementer's claims by reading code and running tests, never trusting the report). Continuing with the same workflow is recommended but not required — any approach that keeps running `go test ./... ` and `make verify` after each change works.
+Tasks 1-8 used the `superpowers:subagent-driven-development` workflow, with
+spec and code-quality reviews after each task. Tasks 9-11 were implemented
+directly, with diff reviews and the required gates after each task.
 
-**To continue:** pick up at Task 9 below. Read this whole plan file first (task descriptions further down still have the original, complete spec — only the status notes are new).
+**To continue:** begin Plan 2. Run the smoke suite with a valid cluster
+kubeconfig when one is available.
 
 **Deferred, non-blocking follow-ups** (found by code-quality review, judged not worth unwinding the pipeline for — see each task's status note above for full detail, tracked here so they aren't lost):
 1. **Task 2** (`internal/config`): thin env-var test coverage; a reflection-based safeguard test would fix several related gaps at once.
 2. **Task 5** (`internal/platform`): `Detect` and `Config.Validate` duplicate `Platform` enum validation with different error text — needs a real design decision, not a mechanical fix (see task note for why).
 3. **Task 8** (`pkg/amdgpu` builder): no way to explicitly clear a string/map field via `With*` — a design decision needed before Plan 2's deploy suite, not a bug.
-4. A pre-existing `goconst` lint finding in `internal/config/validate_test.go` (a repeated string literal `"quay.io/x/bundle:1"`), surfaced by two different implementers' `make lint` runs, never addressed. Trivial fix: extract it to a `const`.
 
-None of these block Tasks 9-11. Pick them up opportunistically, or leave them for a dedicated hardening pass after Plan 1 is complete.
+The earlier `goconst` lint finding was fixed in Task 9. The remaining items
+can be handled in a later hardening pass.
 
 ---
 
@@ -1751,6 +1758,8 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ### Task 9: GPU discovery (nodes and ResourceSlices)
 
+> **Status: ✅ DONE** — commit `e0bb5f4`. `go test ./...` and `make verify` passed.
+
 Node labels checked, in order:
 1. `feature.node.kubernetes.io/amd-gpu=true` / `amd-vgpu=true`, from the NodeFeatureRule in AMD's docs, which the operator's default selector uses.
 2. Raw NFD PCI labels for vendor `1002`, which exist before any AMD-specific rule is installed: `pci-<class>_1002.present` (NFD default fields) or `pci-1002_<device>.present` (AMD's OpenShift NFD config uses `vendor,device`).
@@ -2034,6 +2043,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ### Task 10: `inittools` and the `smoke` suite
 
+> **Status: ✅ DONE** — commit `e4e29cc`. `go test ./...`, `make verify`, and
+> tagged smoke-suite compilation passed. The live suite could not run with
+> the available kubeconfig because its Minikube certificate files are missing.
+
 This is the first Ginkgo suite. It checks that config loading, platform detection, clients, and discovery all work against a real cluster. It installs nothing.
 
 **Agreed adjustment:** Cluster suites use the `integration` build tag, and
@@ -2211,6 +2224,9 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ---
 
 ### Task 11: Reconcile the spec with implementation decisions
+
+> **Status: ✅ DONE** — the six spec corrections below were applied, along
+> with documentation of the agreed `integration` build tag.
 
 **Files:**
 - Modify: `docs/superpowers/specs/2026-09-25-amd-ci-design.md`

@@ -98,6 +98,7 @@ amd-ci/
 │   ├── olm/ nfd/ kmm/
 │   └── pod/ namespace/ deployment/ daemonset/ nodes/ resourceclaim/
 └── tests/
+    ├── smoke/               # cluster read-only checks (foundation)
     ├── amdgpu/              # deploy + workload suite
     └── dra/                 # DRA suite
 ```
@@ -105,17 +106,19 @@ amd-ci/
 Rules:
 - `pkg/clients` registers OpenShift schemes (OLM, config, security) but never
   requires them. Only `internal/platform/openshift.go` uses OpenShift APIs.
-- `pkg/amdgpu` imports the typed `DeviceConfig` API from the
-  `github.com/ROCm/gpu-operator` Go module (vendored). If that module causes
-  dependency conflicts, copy `api/v1alpha1` into the repo instead.
+- `pkg/amdgpu/v1alpha1` is a trimmed local copy of AMD's `amd.com/v1alpha1`
+  types (only fields amd-ci uses). The upstream module needs Go 1.26.7 /
+  k8s.io v0.36 and pulls in prometheus-operator. Updates always go through
+  JSON merge patches (`Builder.Apply`), so unmodeled fields are preserved.
 - `pkg/` builders follow nvidia-ci's builder pattern
-  (`NewBuilder`/`Pull`/`Create`/`Update`/`Delete`/`Exists`).
+  (`NewBuilder`/`Pull`/`Create`/`Apply`/`Delete`/`Exists`).
 
 ## 3. Configuration
 
 All configuration comes from env vars loaded with `envconfig`. Platform-dependent
 defaults are applied **after** detection. `Config.Validate()` runs in
-`BeforeSuite` and rejects invalid combinations before any install starts.
+`inittools.init()` before any spec and rejects invalid combinations before any
+install starts.
 
 | Var | Default (OpenShift / Kubernetes) | Purpose |
 |---|---|---|
@@ -142,13 +145,13 @@ defaults are applied **after** detection. `Config.Validate()` runs in
 | `AMD_DRA_IMAGE` | — | DRA driver image; valid with either source |
 | `AMD_DRA_CHART` | `rocm-k8s-gpu-dra-driver/k8s-gpu-dra-driver` | Helm source: repo chart, local path, or `oci://` |
 | `AMD_DRA_NAMESPACE` | value of `AMD_NAMESPACE` | Namespace for the Helm-installed DRA driver |
-| `AMD_DRA_ARGS` | — | `k=v,k=v` → `cmdLineArguments` (operator) or chart values (helm) |
+| `AMD_DRA_ARGS` | — | `k=v,k=v`, split on the first `=` → `cmdLineArguments` (operator) or chart values (helm) |
 | `AMD_WORKLOAD_IMAGE` | `docker.io/rocm/dev-ubuntu-22.04:<pinned tag>` | ROCm test container |
 | `AMD_WORKLOAD_DURATION` | `60s` | GEMM loop duration |
 
 Validation rules (non-exhaustive):
 - `AMD_OPERATOR_SOURCE=custom` requires `AMD_OPERATOR_BUNDLE` on OpenShift, or
-  `AMD_OPERATOR_CHART` pointing at a non-default source on Kubernetes.
+  a non-default `AMD_OPERATOR_CHART` or `AMD_OPERATOR_IMAGE` on Kubernetes.
 - `AMD_OPERATOR_BUNDLE` on Kubernetes is an error.
 - `AMD_DRA_CHART` set with `AMD_DRA_SOURCE=operator` is an error.
 
@@ -168,8 +171,9 @@ clear which step failed.
 
 1. **BeforeAll**
    - `Config.Validate()`
-   - `discovery.GPUNodes()` finds nodes with an AMD GPU (PCI vendor `1002`
-     NFD label). Skip the suite if there are none.
+   - `discovery.GPUNodes()` finds nodes with an AMD GPU using the
+     `feature.node.kubernetes.io/amd-gpu` / `amd-vgpu` labels or raw NFD PCI
+     labels for vendor `1002`. Skip the suite if there are none.
    - Record pre-existing state: NFD, KMM, cert-manager, operator,
      DeviceConfig, and whether the device plugin is enabled.
 2. **installs dependencies** `[deploy]`: `Platform.InstallNFD`, `Platform.InstallDriverDeps`.
@@ -207,7 +211,7 @@ One `Ordered` Describe with label `dra`. It behaves the same with either DRA sou
    - Ensure the operator is present (idempotent, as in §4).
    - `discovery.GPUNodes()`. Skip if there are none.
 2. **installs the DRA driver** `[dra, deploy]`
-   - `operator`: update the DeviceConfig to `devicePlugin.enable=false` and
+   - `operator`: update the DeviceConfig to `devicePlugin.enableDevicePlugin=false` and
      wait for the device-plugin DaemonSet to be removed, then set
      `draDriver.enable=true` plus the image/args from config. The operator
      rejects both enabled at the same time.
@@ -286,6 +290,8 @@ and the skip message says what was missing.
     OLM/Helm calls mocked via `mockgen`
 - **`DRY_RUN=true`**: every suite builds and logs its objects without applying
   them.
+- **Cluster suites** use the `integration` Go build tag. `go test ./...` stays
+  cluster-independent; `make run-tests` enables the tag for Ginkgo suites.
 - **Repo CI**: GitHub Actions runs `make lint vet unit-test`. GPU cluster
   runs are triggered separately (Prow or lab) and are outside v1 scope.
 
