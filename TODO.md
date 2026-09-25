@@ -5,8 +5,10 @@ vet pass, but the smoke and DRA suites have not been run against a live cluster.
 
 ## 1. Validate the current path on a cluster
 
-- [ ] Run the smoke suite with a valid `KUBECONFIG` on an existing Kubernetes or
+- [x] Run the smoke suite with a valid `KUBECONFIG` on an existing Kubernetes or
       OpenShift cluster that serves `resource.k8s.io/v1`.
+- [x] Add a read-only existing-driver validation path for shared clusters.
+- [x] Add a non-mutating preflight path for prospective driver installs.
 - [ ] Run one driver from a tagged image and chart, then from a source checkout.
       Record the cluster version, driver revision, config, results, and cleanup
       behavior. Use a disposable namespace and verify that resources owned by

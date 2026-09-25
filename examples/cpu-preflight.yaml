@@ -1,0 +1,7 @@
+# Read-only preflight for a prospective CPU DRA installation.
+# Replace the image and chart with the artifacts to be tested.
+preflight: true
+drivers:
+  - name: cpu
+    image: quay.io/example/dra-driver-cpu:dev
+    chart: oci://quay.io/example/dra-driver-cpu-chart

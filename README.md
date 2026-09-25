@@ -39,6 +39,16 @@ namespaces for a retry. Set
 For local charts with dependencies, it runs `helm dependency build` in the
 checkout before installing.
 
+For a driver already installed on a shared cluster, set `existing: true` and
+provide each driver's existing `namespace`. This is a read-only DRA
+validation: it checks the GA DRA API, DeviceClass, and nonempty ResourceSlices,
+and skips installation, workloads, upstream commands, and cleanup.
+
+For a prospective installation, set `preflight: true` with the normal driver
+`image`/`chart` or `sourcePath` configuration. Preflight checks cluster/API
+availability, DeviceClass collisions, and release-name availability, then
+stops without building, installing, or creating workloads.
+
 ```yaml
 namespace: dra-harness
 registry: quay.io/my-account

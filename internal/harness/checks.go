@@ -18,6 +18,45 @@ import (
 
 const checkTimeout = 5 * time.Minute
 
+// ValidateExisting verifies selected drivers without creating or deleting any
+// Kubernetes resources. It is intended for shared clusters where the driver
+// is already installed outside this run.
+func (r *Runner) ValidateExisting(ctx context.Context) error {
+	if !r.Config.Existing {
+		return fmt.Errorf("existing-driver validation requires existing: true")
+	}
+	if _, err := r.Client.Discovery.ServerResourcesForGroupVersion("resource.k8s.io/v1"); err != nil {
+		return fmt.Errorf("cluster must serve resource.k8s.io/v1: %w", err)
+	}
+	r.Drivers = nil
+	for _, config := range r.Config.Drivers {
+		adapter, err := driver.Get(config.Name)
+		if err != nil {
+			return err
+		}
+		installed := Installed{Adapter: adapter, Config: config, Namespace: config.Namespace}
+		if _, err := r.Client.K8s.ResourceV1().DeviceClasses().Get(ctx, adapter.DeviceClass(), metav1.GetOptions{}); err != nil {
+			return fmt.Errorf("existing driver %s DeviceClass %q: %w", config.Name, adapter.DeviceClass(), err)
+		}
+		slices, err := r.Client.K8s.ResourceV1().ResourceSlices().List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return fmt.Errorf("listing ResourceSlices for existing driver %s: %w", config.Name, err)
+		}
+		found := false
+		for _, slice := range slices.Items {
+			if slice.Spec.Driver == adapter.DriverName() && len(slice.Spec.Devices) > 0 {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("existing driver %s has no nonempty ResourceSlices for %q", config.Name, adapter.DriverName())
+		}
+		r.Drivers = append(r.Drivers, installed)
+	}
+	return nil
+}
+
 // CheckDriver waits for the driver's DeviceClass, ResourceSlices, and pods.
 func (r *Runner) CheckDriver(ctx context.Context, d Installed) error {
 	var last string

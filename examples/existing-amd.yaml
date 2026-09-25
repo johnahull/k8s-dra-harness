@@ -1,0 +1,7 @@
+# Read-only validation of an AMD DRA driver already installed on a cluster.
+# This configuration never installs charts, creates namespaces, or creates
+# workload pods. Set the namespace to the driver's existing namespace.
+existing: true
+drivers:
+  - name: amd
+    namespace: openshift-amd-gpu

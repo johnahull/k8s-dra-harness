@@ -71,7 +71,9 @@ func (m *releaseManager) cleanup(ctx context.Context) error {
 }
 
 func releaseExists(ctx context.Context, rel release) (bool, error) {
-	cmd := exec.CommandContext(ctx, "helm", "list", "--all", "--namespace", rel.namespace, "--filter", "^"+rel.name+"$", "--short")
+	// Helm 4 lists releases in every state by default and removed the
+	// deprecated --all flag. The same command is also valid on Helm 3.
+	cmd := exec.CommandContext(ctx, "helm", "list", "--namespace", rel.namespace, "--filter", "^"+rel.name+"$", "--short")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return false, fmt.Errorf("checking Helm release %s/%s: %w: %s", rel.namespace, rel.name, err, out)

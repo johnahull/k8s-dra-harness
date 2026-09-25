@@ -4,7 +4,13 @@ set -e
 
 . "$(dirname "$0")"/common.sh
 
-GOLANGCI_LINT_VERSION="2.8.0"
+# The installer places golangci-lint in GOPATH/bin. Include that directory so
+# the script works in clean shells and CI environments without a preconfigured
+# Go binary PATH.
+export PATH="$(go env GOPATH)/bin:${PATH}"
+
+# v2.9.0 is the first release with Go 1.26 support.
+GOLANGCI_LINT_VERSION="2.9.0"
 # This is required because the Openshift CI is running this test as a non-root
 # user but whitin the / directory as the home directory, therefore, the linter
 # won't have the permissions to create the `/.cache` directory.

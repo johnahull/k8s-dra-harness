@@ -18,6 +18,8 @@ type Config struct {
 	Namespace string       `yaml:"namespace"`
 	Registry  string       `yaml:"registry"`
 	Cleanup   *bool        `yaml:"cleanup"`
+	Existing  bool         `yaml:"existing"`
+	Preflight bool         `yaml:"preflight"`
 	Drivers   []Driver     `yaml:"drivers"`
 	Operator  *AMDOperator `yaml:"amdOperator"`
 }
@@ -99,21 +101,39 @@ func (c *Config) Validate() error {
 			problems = append(problems, fmt.Errorf("duplicate driver %q", d.Name))
 		}
 		seen[d.Name] = true
-		if (d.SourcePath == "") == (d.Image == "") {
-			problems = append(problems, fmt.Errorf("driver %q requires exactly one of sourcePath or image", d.Name))
-		}
-		if d.SourcePath == "" && d.Chart == "" {
-			problems = append(problems, fmt.Errorf("driver %q requires chart when using image", d.Name))
-		}
-		if d.SourcePath != "" && c.Registry == "" {
-			problems = append(problems, fmt.Errorf("driver %q source build requires registry", d.Name))
+		if c.Existing {
+			if d.Namespace == "" {
+				problems = append(problems, fmt.Errorf("existing driver %q requires namespace", d.Name))
+			}
+			if d.SourcePath != "" || d.Image != "" || d.Chart != "" {
+				problems = append(problems, fmt.Errorf("existing driver %q must not specify sourcePath, image, or chart", d.Name))
+			}
+		} else {
+			if (d.SourcePath == "") == (d.Image == "") {
+				problems = append(problems, fmt.Errorf("driver %q requires exactly one of sourcePath or image", d.Name))
+			}
+			if d.SourcePath == "" && d.Chart == "" {
+				problems = append(problems, fmt.Errorf("driver %q requires chart when using image", d.Name))
+			}
+			if d.SourcePath != "" && c.Registry == "" {
+				problems = append(problems, fmt.Errorf("driver %q source build requires registry", d.Name))
+			}
 		}
 		if d.Namespace != "" && len(validation.IsDNS1123Label(d.Namespace)) > 0 {
 			problems = append(problems, fmt.Errorf("driver %q namespace must be a DNS label", d.Name))
 		}
-		if len(d.UpstreamTests) > 0 && d.SourcePath == "" {
+		if len(d.UpstreamTests) > 0 && (c.Existing || d.SourcePath == "") {
 			problems = append(problems, fmt.Errorf("driver %q upstreamTests requires sourcePath", d.Name))
 		}
+	}
+	if c.Existing && c.Operator != nil {
+		problems = append(problems, errors.New("existing mode cannot select amdOperator"))
+	}
+	if c.Preflight && c.Existing {
+		problems = append(problems, errors.New("preflight and existing modes are mutually exclusive"))
+	}
+	if c.Preflight && c.Operator != nil {
+		problems = append(problems, errors.New("preflight mode cannot select amdOperator"))
 	}
 	if c.Operator != nil {
 		if c.Operator.Chart == "" && c.Operator.Bundle == "" {

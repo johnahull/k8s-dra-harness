@@ -24,8 +24,19 @@ var _ = Describe("selected drivers", Ordered, func() {
 		Expect(err).NotTo(HaveOccurred())
 		runner, err = harness.New(cfg)
 		Expect(err).NotTo(HaveOccurred())
-		err = runner.Start(ctx)
+		if cfg.Existing {
+			err = runner.ValidateExisting(ctx)
+		} else if cfg.Preflight {
+			err = runner.Preflight(ctx)
+		} else {
+			err = runner.Start(ctx)
+		}
 		if err != nil {
+			if cfg.Existing || cfg.Preflight {
+				runner = nil
+				Expect(err).NotTo(HaveOccurred())
+				return
+			}
 			cleanupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 			defer cancel()
 			err = errors.Join(err, runner.Cleanup(cleanupCtx))
@@ -35,7 +46,7 @@ var _ = Describe("selected drivers", Ordered, func() {
 	})
 
 	AfterAll(func() {
-		if runner == nil || !runner.Config.ShouldCleanup() {
+		if runner == nil || runner.Config.Existing || runner.Config.Preflight || !runner.Config.ShouldCleanup() {
 			return
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
@@ -44,6 +55,9 @@ var _ = Describe("selected drivers", Ordered, func() {
 	})
 
 	It("publishes ready driver pods and DRA resources", func(ctx SpecContext) {
+		if runner.Config.Existing || runner.Config.Preflight {
+			Skip("driver state was validated without installation")
+		}
 		for _, d := range runner.Drivers {
 			By("checking " + d.Config.Name)
 			Expect(runner.CheckDriver(ctx, d)).To(Succeed())
@@ -51,6 +65,9 @@ var _ = Describe("selected drivers", Ordered, func() {
 	})
 
 	It("runs checkout end-to-end suites when configured", func(ctx SpecContext) {
+		if runner.Config.Existing || runner.Config.Preflight {
+			Skip("non-installation mode is read-only")
+		}
 		for _, d := range runner.Drivers {
 			if len(d.Config.UpstreamTests) == 0 {
 				continue
@@ -61,6 +78,9 @@ var _ = Describe("selected drivers", Ordered, func() {
 	})
 
 	It("runs a live workload for each driver", func(ctx SpecContext) {
+		if runner.Config.Existing || runner.Config.Preflight {
+			Skip("non-installation mode is read-only")
+		}
 		for _, d := range runner.Drivers {
 			By("allocating " + d.Config.Name)
 			Expect(runner.RunWorkload(ctx, d)).To(Succeed())
@@ -68,6 +88,9 @@ var _ = Describe("selected drivers", Ordered, func() {
 	})
 
 	It("runs an AMD Operator device-plugin workload when selected alone", func(ctx SpecContext) {
+		if runner.Config.Existing || runner.Config.Preflight {
+			Skip("non-installation mode is read-only")
+		}
 		if runner.Config.Operator == nil || len(runner.Drivers) > 0 {
 			Skip("requires an operator-only run")
 		}
@@ -75,6 +98,9 @@ var _ = Describe("selected drivers", Ordered, func() {
 	})
 
 	It("allocates a supported driver pair to one workload", func(ctx SpecContext) {
+		if runner.Config.Existing {
+			Skip("existing mode is read-only")
+		}
 		if !runner.SupportsJointWorkload() {
 			Skip("selected drivers have no joint workload")
 		}

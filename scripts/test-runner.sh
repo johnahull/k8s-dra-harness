@@ -6,6 +6,13 @@ GOPATH="${GOPATH:-${HOME}/go}"
 PATH=$PATH:$GOPATH/bin
 TEST_DIR="./tests"
 
+# Ginkgo changes its working directory to each suite package. Normalize the
+# run config while still at the repository root so documented relative paths
+# such as examples/cpu-preflight.yaml continue to work.
+if [[ -n "${DRA_HARNESS_CONFIG}" && "${DRA_HARNESS_CONFIG}" != /* ]]; then
+    export DRA_HARNESS_CONFIG="$(pwd)/${DRA_HARNESS_CONFIG}"
+fi
+
 if [[ -n "${ARTIFACT_DIR}" ]]; then
     export REPORTS_DUMP_DIR=${ARTIFACT_DIR}
 fi

@@ -53,3 +53,35 @@ func TestOperatorOnlyConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestExistingConfig(t *testing.T) {
+	c := Config{Existing: true, Drivers: []Driver{{Name: "amd", Namespace: "openshift-amd-gpu"}}}
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	bad := c
+	bad.Drivers = []Driver{{Name: "cpu"}}
+	if err := bad.Validate(); err == nil || !strings.Contains(err.Error(), "requires namespace") {
+		t.Fatalf("Validate() = %v, want missing namespace error", err)
+	}
+
+	bad = c
+	bad.Drivers = []Driver{{Name: "amd", Namespace: "openshift-amd-gpu", Image: "quay.io/example/amd:dev"}}
+	if err := bad.Validate(); err == nil || !strings.Contains(err.Error(), "must not specify") {
+		t.Fatalf("Validate() = %v, want artifact error", err)
+	}
+}
+
+func TestPreflightConfig(t *testing.T) {
+	c := Config{Preflight: true, Drivers: []Driver{{Name: "cpu", Image: "quay.io/example/cpu:dev", Chart: "oci://example/cpu"}}}
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	bad := c
+	bad.Existing = true
+	if err := bad.Validate(); err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("Validate() = %v, want mode conflict", err)
+	}
+}
