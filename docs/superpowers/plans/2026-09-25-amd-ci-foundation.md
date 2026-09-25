@@ -20,7 +20,27 @@
 - File names must match `^[a-z][a-z0-9]*(_suite_test|_test)?\.go$` (the revive rule copied from nvidia-ci). No underscores or dashes elsewhere in the name.
 - Dependencies are vendored. After adding an import of a new module, run `make deps-update`.
 - Unit tests use the standard `testing` package. Only `tests/` uses Ginkgo.
-- Commit messages end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+- Commit messages end with `Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>` (this superseded the `Claude Opus 5.5` trailer shown above partway through implementation — Tasks 1-8's commits already use the Sonnet 5 trailer; use it for all remaining commits too).
+
+---
+
+## Progress (updated 2026-09-25, mid-session handoff)
+
+**Tasks 1-8 are DONE** (implemented, spec-reviewed, and code-quality-reviewed; see the status note under each task heading below for commit SHAs and any deferred follow-ups). **Tasks 9, 10, 11 are NOT started.**
+
+Repo: `~/redhat/amd/amd-ci`, all work committed directly to `main` (explicitly approved by the user for this repo — no worktree/feature branch was used). Latest commit as of this handoff: `fd77b79` ("feat(amdgpu): add DeviceConfig builder with merge-patch updates").
+
+This work was executed using the `superpowers:subagent-driven-development` workflow: a fresh subagent per task, with a spec-compliance review and a code-quality review after each (both independently re-verifying the implementer's claims by reading code and running tests, never trusting the report). Continuing with the same workflow is recommended but not required — any approach that keeps running `go test ./... ` and `make verify` after each change works.
+
+**To continue:** pick up at Task 9 below. Read this whole plan file first (task descriptions further down still have the original, complete spec — only the status notes are new).
+
+**Deferred, non-blocking follow-ups** (found by code-quality review, judged not worth unwinding the pipeline for — see each task's status note above for full detail, tracked here so they aren't lost):
+1. **Task 2** (`internal/config`): thin env-var test coverage; a reflection-based safeguard test would fix several related gaps at once.
+2. **Task 5** (`internal/platform`): `Detect` and `Config.Validate` duplicate `Platform` enum validation with different error text — needs a real design decision, not a mechanical fix (see task note for why).
+3. **Task 8** (`pkg/amdgpu` builder): no way to explicitly clear a string/map field via `With*` — a design decision needed before Plan 2's deploy suite, not a bug.
+4. A pre-existing `goconst` lint finding in `internal/config/validate_test.go` (a repeated string literal `"quay.io/x/bundle:1"`), surfaced by two different implementers' `make lint` runs, never addressed. Trivial fix: extract it to a `const`.
+
+None of these block Tasks 9-11. Pick them up opportunistically, or leave them for a dedicated hardening pass after Plan 1 is complete.
 
 ---
 
@@ -48,6 +68,8 @@
 ---
 
 ### Task 1: Repo scaffold and tooling
+
+> **Status: ✅ DONE** — commit `c488b21`. Spec review passed, quality review passed (no issues).
 
 **Files:**
 - Create: `go.mod`, `Makefile`, `.golangci.yml`, `.gitignore`, `README.md`, `scripts/common.sh`, `scripts/golangci-lint.sh`, `scripts/test-runner.sh`
@@ -204,6 +226,8 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ---
 
 ### Task 2: Config struct and `Load()`
+
+> **Status: ✅ DONE** — commit `750c909`. Spec review passed. Quality review passed with **deferred follow-ups** (not yet fixed): thin env-var round-trip test coverage (~7 of ~26 tagged fields actually verified), no test for `Load()`'s error path, and `clearEnv`'s hand-maintained non-`AMD_`-prefixed var list could drift. Reviewer's suggested fix: one reflection-based test that walks `Config`'s struct tags to both assert every leaf field has a properly-namespaced `envconfig` tag and generate `clearEnv`'s sweep list from the same source — closes all of these at once.
 
 **Files:**
 - Create: `internal/config/config.go`, `internal/config/keyvalues.go`
@@ -505,6 +529,8 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ### Task 3: Platform defaults and scaled timeouts
 
+> **Status: ✅ DONE** — commit `e6d064e`. Spec review passed, quality review passed (only minor doc-comment polish suggestions, not applied).
+
 **Files:**
 - Create: `internal/config/defaults.go`
 - Test: `internal/config/defaults_test.go`
@@ -656,6 +682,8 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ---
 
 ### Task 4: Config validation
+
+> **Status: ✅ DONE** — commit `170b904`, fix commit `c7688f2` (added a missing test case: `DRA.Source=helm` + `Chart` set is a valid combination that was never asserted). Spec + quality reviews passed after the fix.
 
 **Files:**
 - Create: `internal/config/validate.go`
@@ -885,6 +913,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ### Task 5: Platform detection
 
+> **Status: ✅ DONE** — commit `3e2d62d`, fix commit `ceea651` (added a test for the `ServerGroups()` failure path, which was previously unexercised). Spec + quality reviews passed after the fix.
+>
+> **Deferred follow-up** (not yet fixed): `internal/platform.Detect` and `internal/config.Config.Validate` each independently validate the `Platform` enum, with two different error message formats. This will drift if only one is updated later. Reviewer's suggested fix: have `Detect` delegate to a shared validation helper exported from `internal/config`, rather than duplicating the enum switch — but note `Detect`'s own test (`"invalid override"`, `wantErr: true`) requires `Detect` to keep *some* form of validation, so this isn't a simple "delete the check" fix; it needs a real design decision.
+
 **Files:**
 - Create: `internal/platform/detect.go`
 - Test: `internal/platform/detect_test.go`
@@ -1013,6 +1045,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ---
 
 ### Task 6: Minimal `DeviceConfig` API types
+
+> **Status: ✅ DONE** — commit `4cec9c3`, fix commit `478a449` (extended the JSON-tag regression test to also cover `DeviceConfigStatus` fields and `Spec.Selector`, including `DeviceConfigStatus.Drivers`'s intentional Go/JSON name mismatch — Go field `Drivers` (plural) is tagged `json:"driver"` (singular) to match upstream; the fix locks this in with a test verified via mutation testing to actually catch a regression). Spec + quality reviews passed after the fix.
+>
+> Note: `k8s.io/utils` was pinned in this task's Step 5 to `v0.0.0-20260108192941-914a6e750570`, but the implementer used whatever version was already vendored transitively from Task 5's `k8s.io/client-go` (`v0.0.0-20251002143259-bc988d571ff4`) instead, since it already provides `ptr.To` and avoids a version conflict. Reviewed and accepted as a reasonable, low-risk judgment call.
 
 The types are copied (trimmed) from `~/redhat/amd/gpu-operator/api/v1alpha1/deviceconfig_types.go` instead of importing that Go module. The upstream module needs Go 1.26.7 and k8s.io v0.36, and pulls in prometheus-operator. Only the fields this framework reads or sets are modeled. JSON names must match upstream **exactly**. For example, the device plugin toggle is `enableDevicePlugin`, not `enable`.
 
@@ -1255,6 +1291,8 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ### Task 7: API clients
 
+> **Status: ✅ DONE** — commit `3726bf8`. Spec + quality reviews passed with no issues (verified against vendored source that the kubeconfig fallback chain, `Settings.Discovery`'s compatibility with `platform.Detect`, and non-blocking client construction all behave as documented).
+
 **Files:**
 - Create: `pkg/clients/clients.go`
 - Test: `pkg/clients/clients_test.go`
@@ -1392,6 +1430,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ---
 
 ### Task 8: `DeviceConfig` builder
+
+> **Status: ✅ DONE** — commit `fd77b79`. Spec + quality reviews passed with no blocking issues.
+>
+> **Deferred follow-up / design decision needed before Plan 2** (not yet fixed): the `With*` methods on `Builder` treat an empty string / nil-or-empty map as "leave unchanged," so there is currently no way to explicitly clear `Driver.Version`, `Driver.Image`, `DRADriver.Image`, or `DRADriver.CmdLineArguments` back to empty through the public API — a caller needing that must mutate `Definition` directly, which bypasses the merge-patch diffing design. This doesn't block Plan 1 (Tasks 9-10 don't need it), but Plan 2's deploy suite likely will. Decide either to (a) accept this as a documented limitation, or (b) add an explicit-clear escape hatch (e.g. a sentinel value or dedicated `ClearX()` methods) before Plan 2 depends on update flows.
 
 **Files:**
 - Create: `pkg/amdgpu/builder.go`
