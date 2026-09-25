@@ -72,5 +72,6 @@ provide `bundle`, `package`, and a `deviceConfig` map containing the raw
 Bundle cleanup leaves shared CRDs in place; it removes the run's DeviceConfig,
 OLM installation, and namespace.
 
-See [the design](docs/superpowers/specs/2026-09-25-k8s-dra-harness-design.md)
+See [development TODOs](TODO.md),
+[the design](docs/superpowers/specs/2026-09-25-k8s-dra-harness-design.md)
 and [the AMD foundation history](docs/superpowers/plans/2026-09-25-amd-ci-foundation.md).
