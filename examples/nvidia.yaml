@@ -1,0 +1,10 @@
+# Kubernetes example: install NVIDIA GPU Operator prerequisites and the
+# standalone NVIDIA GPU DRA driver from the local checkouts.
+namespace: dra-harness
+registry: quay.io/my-account
+nvidiaOperator:
+  chart: /home/jhull/devel/nvidia/gpu-operator/deployments/gpu-operator
+  namespace: nvidia-gpu-operator
+drivers:
+  - name: nvidia
+    sourcePath: /home/jhull/devel/nvidia/k8s-dra-driver-gpu

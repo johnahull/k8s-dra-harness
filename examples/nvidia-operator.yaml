@@ -1,0 +1,6 @@
+# Kubernetes example: install the NVIDIA GPU Operator and exercise its classic
+# device plugin. This does not install the standalone DRA driver.
+namespace: dra-harness
+nvidiaOperator:
+  chart: /home/jhull/devel/nvidia/gpu-operator/deployments/gpu-operator
+  namespace: nvidia-gpu-operator

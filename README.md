@@ -3,9 +3,9 @@
 Test custom Dynamic Resource Allocation (DRA) drivers on an existing Kubernetes
 or OpenShift cluster. The harness can build a local driver checkout, push its
 image to a registry, deploy the matching Helm chart, run that checkout's own
-end-to-end suite, and then run independent live-workload checks. AMD GPU and CPU
-are optional, built-in adapters: select either one or both in `drivers`, or
-select neither for an AMD Operator-only run. The `example` adapter targets the
+end-to-end suite, and then run independent live-workload checks. AMD GPU, NVIDIA
+GPU, and CPU are optional, built-in adapters: select one or more in `drivers`,
+or select neither for an operator-only run. The `example` adapter targets the
 Kubernetes mock-device DRA example driver and does not require GPU hardware.
 Additional drivers can follow the
 `internal/driver.Adapter` contract. The adapters are compiled into the harness;
@@ -21,6 +21,8 @@ Helm, a registry login, and the upstream checkout's build dependencies.
 OpenShift runs also need `oc`; AMD Operator bundles need `operator-sdk` and OLM.
 CPU workloads need the runtime's NRI and CDI support and compatible CPUManager
 settings. AMD workloads need GPU nodes with a working amdgpu kernel driver.
+NVIDIA runs need the NVIDIA GPU Operator chart and a working NVIDIA
+driver/toolkit on the target nodes.
 
 ## Run
 
@@ -83,6 +85,24 @@ provide `bundle`, `package`, and a `deviceConfig` map containing the raw
 `DeviceConfig.spec` fields to create after OLM installs the operator.
 Bundle cleanup leaves shared CRDs in place; it removes the run's DeviceConfig,
 OLM installation, and namespace.
+
+The `nvidia` adapter builds and installs the NVIDIA DRA driver's
+`deployments/helm/dra-driver-nvidia-gpu` chart. An optional `nvidiaOperator`
+block installs the NVIDIA GPU Operator chart first. The harness uses the
+operator's classic `ClusterPolicy`; when the standalone `nvidia` driver is
+selected, it disables the operator's legacy device plugin so only the DRA
+driver allocates GPUs. It also waits for `ClusterPolicy` readiness and aligns
+the DRA driver's `nvidiaDriverRoot` with the operator's configured driver
+directory. The operator's `GPUCluster` DRA mode is intentionally rejected
+because it would compete with the standalone driver, and preflight refuses a
+pre-existing standard NVIDIA device plugin advertising `nvidia.com/gpu`. See
+[the combined NVIDIA example](examples/nvidia.yaml) and
+[the operator-only example](examples/nvidia-operator.yaml).
+
+NVIDIA GPU allocation is experimental in the checked-out upstream driver.
+Pin the NVIDIA Operator and DRA driver checkouts or image/chart revisions when
+using this in repeatable CI, and treat the live NVIDIA run as hardware-specific
+validation rather than a production support guarantee.
 
 See [development TODOs](TODO.md),
 [the design](docs/superpowers/specs/2026-09-25-k8s-dra-harness-design.md)

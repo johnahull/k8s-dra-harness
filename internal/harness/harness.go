@@ -12,6 +12,7 @@ import (
 
 	"github.com/johnahull/k8s-dra-harness/internal/amdoperator"
 	"github.com/johnahull/k8s-dra-harness/internal/driver"
+	"github.com/johnahull/k8s-dra-harness/internal/nvidiaoperator"
 	"github.com/johnahull/k8s-dra-harness/internal/runconfig"
 	"github.com/johnahull/k8s-dra-harness/pkg/clients"
 	"gopkg.in/yaml.v3"
@@ -30,6 +31,8 @@ type Installed struct {
 	Namespace string
 	Release   string
 }
+
+const nvidiaAdapterName = "nvidia"
 
 // Runner owns only namespaces and Helm releases created during this run.
 type Runner struct {
@@ -92,17 +95,32 @@ func (r *Runner) Preflight(ctx context.Context) error {
 	}
 	for _, d := range r.Config.Drivers {
 		a, _ := driver.Get(d.Name)
-		_, err := r.Client.K8s.ResourceV1().DeviceClasses().Get(ctx, a.DeviceClass(), metav1.GetOptions{})
-		if err == nil {
-			return fmt.Errorf("DeviceClass %q already exists; refusing to replace an existing driver", a.DeviceClass())
+		if d.Name == nvidiaAdapterName && r.Config.NVIDIAOperator != nil {
+			if _, err := nvidiaoperator.DriverValues(d.Values, r.Config.NVIDIAOperator); err != nil {
+				return fmt.Errorf("validating NVIDIA driver/operator values: %w", err)
+			}
 		}
-		if !apierrors.IsNotFound(err) {
-			return fmt.Errorf("checking DeviceClass %q: %w", a.DeviceClass(), err)
+		for _, class := range driver.DeviceClasses(a, d.Values) {
+			_, err := r.Client.K8s.ResourceV1().DeviceClasses().Get(ctx, class, metav1.GetOptions{})
+			if err == nil {
+				return fmt.Errorf("DeviceClass %q already exists; refusing to replace an existing driver", class)
+			}
+			if !apierrors.IsNotFound(err) {
+				return fmt.Errorf("checking DeviceClass %q: %w", class, err)
+			}
 		}
 		ns := r.namespace(d.Namespace)
 		name := "dra-" + d.Name + "-" + r.ID
 		if err := r.releases.requireAbsent(ctx, release{ns, name}); err != nil {
 			return err
+		}
+	}
+	for _, selected := range r.Config.Drivers {
+		if selected.Name == nvidiaAdapterName && nvidiaoperator.GPUResourcesEnabled(selected.Values) {
+			if err := nvidiaoperator.CheckStandardDevicePlugin(ctx, r.Client.K8s); err != nil {
+				return err
+			}
+			break
 		}
 	}
 	if r.Config.Operator != nil {
@@ -114,6 +132,14 @@ func (r *Runner) Preflight(ctx context.Context) error {
 				return fmt.Errorf("operator-sdk is required for bundle installs: %w", err)
 			}
 		} else if err := r.releases.requireAbsent(ctx, release{r.namespace(r.Config.Operator.Namespace), "amd-operator-" + r.ID}); err != nil {
+			return err
+		}
+	}
+	if r.Config.NVIDIAOperator != nil {
+		if err := nvidiaoperator.CheckPolicies(ctx, r.Client.Config); err != nil {
+			return err
+		}
+		if err := r.releases.requireAbsent(ctx, release{r.namespace(r.Config.NVIDIAOperator.Namespace), "nvidia-operator-" + r.ID}); err != nil {
 			return err
 		}
 	}
@@ -146,11 +172,24 @@ func (r *Runner) Start(ctx context.Context) error {
 			return err
 		}
 	}
+	if r.Config.NVIDIAOperator != nil {
+		if err := r.installNVIDIAOperator(ctx); err != nil {
+			return err
+		}
+	}
 	for _, d := range r.Drivers {
 		if err := r.ensureNamespace(ctx, d.Namespace); err != nil {
 			return err
 		}
-		values, err := d.Adapter.Values(d.Config.Values, d.Image)
+		driverValues := d.Config.Values
+		var err error
+		if d.Config.Name == nvidiaAdapterName && r.Config.NVIDIAOperator != nil {
+			driverValues, err = nvidiaoperator.DriverValues(driverValues, r.Config.NVIDIAOperator)
+			if err != nil {
+				return fmt.Errorf("preparing NVIDIA driver/operator values: %w", err)
+			}
+		}
+		values, err := d.Adapter.Values(driverValues, d.Image)
 		if err != nil {
 			return fmt.Errorf("preparing %s values: %w", d.Config.Name, err)
 		}
@@ -218,6 +257,22 @@ func (r *Runner) installOperator(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+func (r *Runner) installNVIDIAOperator(ctx context.Context) error {
+	o := r.Config.NVIDIAOperator
+	ns := r.namespace(o.Namespace)
+	if err := r.ensureNamespace(ctx, ns); err != nil {
+		return err
+	}
+	values, err := nvidiaoperator.ChartValues(o, nvidiaoperator.HasStandaloneDriver(r.Config.Drivers), r.openshift)
+	if err != nil {
+		return err
+	}
+	if err := r.releases.installRelease(ctx, release{ns, "nvidia-operator-" + r.ID}, o.Chart, values); err != nil {
+		return err
+	}
+	return nvidiaoperator.WaitClusterPolicyReady(ctx, r.Client.Config)
 }
 
 // Cleanup releases resources in reverse order, continuing after errors.

@@ -15,13 +15,14 @@ import (
 
 // Config describes one run against an existing cluster.
 type Config struct {
-	Namespace string       `yaml:"namespace"`
-	Registry  string       `yaml:"registry"`
-	Cleanup   *bool        `yaml:"cleanup"`
-	Existing  bool         `yaml:"existing"`
-	Preflight bool         `yaml:"preflight"`
-	Drivers   []Driver     `yaml:"drivers"`
-	Operator  *AMDOperator `yaml:"amdOperator"`
+	Namespace      string          `yaml:"namespace"`
+	Registry       string          `yaml:"registry"`
+	Cleanup        *bool           `yaml:"cleanup"`
+	Existing       bool            `yaml:"existing"`
+	Preflight      bool            `yaml:"preflight"`
+	Drivers        []Driver        `yaml:"drivers"`
+	Operator       *AMDOperator    `yaml:"amdOperator"`
+	NVIDIAOperator *NVIDIAOperator `yaml:"nvidiaOperator"`
 }
 
 // Driver selects an adapter and either a local checkout or a published image.
@@ -44,6 +45,16 @@ type AMDOperator struct {
 	Namespace    string         `yaml:"namespace"`
 	Values       map[string]any `yaml:"values"`
 	DeviceConfig map[string]any `yaml:"deviceConfig"`
+}
+
+// NVIDIAOperator is an optional prerequisite for an NVIDIA GPU driver. The
+// harness installs the GPU Operator chart in classic ClusterPolicy mode; the
+// standalone NVIDIA DRA adapter owns DRA resources separately.
+type NVIDIAOperator struct {
+	Chart     string         `yaml:"chart"`
+	Image     string         `yaml:"image"`
+	Namespace string         `yaml:"namespace"`
+	Values    map[string]any `yaml:"values"`
 }
 
 // Load reads a strict YAML configuration, resolving checkout and chart paths
@@ -72,6 +83,9 @@ func Load(path string) (*Config, error) {
 	if c.Operator != nil && strings.HasPrefix(c.Operator.Chart, ".") && !filepath.IsAbs(c.Operator.Chart) {
 		c.Operator.Chart = filepath.Join(base, c.Operator.Chart)
 	}
+	if c.NVIDIAOperator != nil && strings.HasPrefix(c.NVIDIAOperator.Chart, ".") && !filepath.IsAbs(c.NVIDIAOperator.Chart) {
+		c.NVIDIAOperator.Chart = filepath.Join(base, c.NVIDIAOperator.Chart)
+	}
 	if c.Namespace == "" {
 		c.Namespace = "dra-harness"
 	}
@@ -89,8 +103,8 @@ func (c *Config) Validate() error {
 	if len(namespace) > 40 || len(validation.IsDNS1123Label(namespace)) > 0 {
 		problems = append(problems, errors.New("namespace must be a DNS label of at most 40 characters"))
 	}
-	if len(c.Drivers) == 0 && c.Operator == nil {
-		problems = append(problems, errors.New("at least one driver or amdOperator is required"))
+	if len(c.Drivers) == 0 && c.Operator == nil && c.NVIDIAOperator == nil {
+		problems = append(problems, errors.New("at least one driver or operator is required"))
 	}
 	seen := map[string]bool{}
 	for _, d := range c.Drivers {
@@ -126,14 +140,17 @@ func (c *Config) Validate() error {
 			problems = append(problems, fmt.Errorf("driver %q upstreamTests requires sourcePath", d.Name))
 		}
 	}
-	if c.Existing && c.Operator != nil {
-		problems = append(problems, errors.New("existing mode cannot select amdOperator"))
+	if c.Operator != nil && c.NVIDIAOperator != nil {
+		problems = append(problems, errors.New("amdOperator and nvidiaOperator are mutually exclusive"))
+	}
+	if c.Existing && (c.Operator != nil || c.NVIDIAOperator != nil) {
+		problems = append(problems, errors.New("existing mode cannot select an operator"))
 	}
 	if c.Preflight && c.Existing {
 		problems = append(problems, errors.New("preflight and existing modes are mutually exclusive"))
 	}
-	if c.Preflight && c.Operator != nil {
-		problems = append(problems, errors.New("preflight mode cannot select amdOperator"))
+	if c.Preflight && (c.Operator != nil || c.NVIDIAOperator != nil) {
+		problems = append(problems, errors.New("preflight mode cannot select an operator"))
 	}
 	if c.Operator != nil {
 		if c.Operator.Chart == "" && c.Operator.Bundle == "" {
@@ -148,6 +165,12 @@ func (c *Config) Validate() error {
 		if c.Operator.Bundle != "" && len(c.Operator.DeviceConfig) == 0 {
 			problems = append(problems, errors.New("amdOperator bundle requires deviceConfig spec"))
 		}
+	}
+	if c.NVIDIAOperator != nil && c.NVIDIAOperator.Chart == "" {
+		problems = append(problems, errors.New("nvidiaOperator requires chart"))
+	}
+	if c.NVIDIAOperator != nil && c.NVIDIAOperator.Namespace != "" && len(validation.IsDNS1123Label(c.NVIDIAOperator.Namespace)) > 0 {
+		problems = append(problems, errors.New("nvidiaOperator namespace must be a DNS label"))
 	}
 	return errors.Join(problems...)
 }

@@ -24,6 +24,21 @@ type Adapter interface {
 	Workload() corev1.Container
 }
 
+// DeviceClassLister is an optional extension for charts that create more than
+// one DeviceClass. The primary Adapter.DeviceClass remains the class used by
+// generic allocation checks.
+type DeviceClassLister interface {
+	DeviceClasses(values map[string]any) []string
+}
+
+// DeviceClasses returns all classes an adapter expects its chart to create.
+func DeviceClasses(adapter Adapter, values map[string]any) []string {
+	if lister, ok := adapter.(DeviceClassLister); ok {
+		return lister.DeviceClasses(values)
+	}
+	return []string{adapter.DeviceClass()}
+}
+
 // Source selects a checkout to build or a published image to deploy.
 type Source struct {
 	Path  string

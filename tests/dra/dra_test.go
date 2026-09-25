@@ -87,11 +87,11 @@ var _ = Describe("selected drivers", Ordered, func() {
 		}
 	})
 
-	It("runs an AMD Operator device-plugin workload when selected alone", func(ctx SpecContext) {
+	It("runs an operator device-plugin workload when selected alone", func(ctx SpecContext) {
 		if runner.Config.Existing || runner.Config.Preflight {
 			Skip("non-installation mode is read-only")
 		}
-		if runner.Config.Operator == nil || len(runner.Drivers) > 0 {
+		if (runner.Config.Operator == nil && runner.Config.NVIDIAOperator == nil) || len(runner.Drivers) > 0 {
 			Skip("requires an operator-only run")
 		}
 		Expect(runner.RunOperatorWorkload(ctx)).To(Succeed())

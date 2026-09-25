@@ -9,6 +9,7 @@ import (
 
 	"github.com/johnahull/k8s-dra-harness/internal/amdoperator"
 	"github.com/johnahull/k8s-dra-harness/internal/driver"
+	"github.com/johnahull/k8s-dra-harness/internal/nvidiaoperator"
 	corev1 "k8s.io/api/core/v1"
 	resourcev1 "k8s.io/api/resource/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -139,11 +140,14 @@ func (r *Runner) RunJointWorkload(ctx context.Context) error {
 	return r.runWorkload(ctx, r.Drivers)
 }
 
-// RunOperatorWorkload checks an operator-only installation through the AMD
-// device plugin and a real GPU workload.
+// RunOperatorWorkload checks an operator-only installation through its device
+// plugin and a real GPU workload.
 func (r *Runner) RunOperatorWorkload(ctx context.Context) error {
-	if r.Config.Operator == nil || len(r.Drivers) != 0 {
+	if (r.Config.Operator == nil && r.Config.NVIDIAOperator == nil) || len(r.Drivers) != 0 {
 		return fmt.Errorf("operator workload requires an operator-only run")
+	}
+	if r.Config.NVIDIAOperator != nil {
+		return nvidiaoperator.RunWorkload(ctx, r.Client, r.WorkloadNamespace(), r.ID)
 	}
 	return amdoperator.RunWorkload(ctx, r.Client, r.WorkloadNamespace(), r.ID)
 }
@@ -200,10 +204,23 @@ func (r *Runner) runWorkload(ctx context.Context, selected []Installed) error {
 		last = fmt.Sprintf("pod phase=%s reason=%s message=%s", p.Status.Phase, p.Status.Reason, p.Status.Message)
 		switch p.Status.Phase {
 		case corev1.PodSucceeded:
+			// A completed pod proves that the scheduler and kubelet accepted
+			// the DRA claims. Some clusters clear or stop exposing allocation
+			// status as the pod exits, so do not require a post-completion read.
 			return true, nil
 		case corev1.PodFailed:
 			return false, fmt.Errorf("workload failed: %s", last)
 		case corev1.PodPending, corev1.PodRunning, corev1.PodUnknown:
+			for _, claimName := range claims {
+				claim, err := r.Client.K8s.ResourceV1().ResourceClaims(ns).Get(ctx, claimName, metav1.GetOptions{})
+				if err != nil {
+					return false, err
+				}
+				if claim.Status.Allocation == nil {
+					last = fmt.Sprintf("pod phase=%s; claim %s is not allocated", p.Status.Phase, claimName)
+					return false, nil
+				}
+			}
 			return false, nil
 		default:
 			return false, fmt.Errorf("unrecognized pod phase %q", p.Status.Phase)
@@ -224,15 +241,6 @@ func (r *Runner) runWorkload(ctx context.Context, selected []Installed) error {
 	}
 	if !strings.Contains(buf.String(), "PASS") {
 		return fmt.Errorf("workload logs lack PASS: %s", buf.String())
-	}
-	for _, claimName := range claims {
-		claim, err := r.Client.K8s.ResourceV1().ResourceClaims(ns).Get(ctx, claimName, metav1.GetOptions{})
-		if err != nil {
-			return err
-		}
-		if claim.Status.Allocation == nil {
-			return fmt.Errorf("claim %s was not allocated", claimName)
-		}
 	}
 	if err := r.Client.K8s.CoreV1().Pods(ns).Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
 		return err

@@ -30,7 +30,7 @@ func TestValidate(t *testing.T) {
 		config Config
 		want   string
 	}{
-		{"missing drivers", Config{}, "at least one driver or amdOperator"},
+		{"missing drivers", Config{}, "at least one driver or operator"},
 		{"unknown", Config{Drivers: []Driver{{Name: "sriov", Image: "x", Chart: "x"}}}, "unsupported driver"},
 		{"duplicate", Config{Drivers: []Driver{{Name: "cpu", Image: "x", Chart: "x"}, {Name: "cpu", Image: "y", Chart: "y"}}}, "duplicate driver"},
 		{"both sources", Config{Drivers: []Driver{{Name: "cpu", Image: "x", SourcePath: "/tmp/cpu"}}}, "exactly one"},
@@ -51,6 +51,14 @@ func TestOperatorOnlyConfig(t *testing.T) {
 	c := Config{Operator: &AMDOperator{Chart: "./chart", Image: "quay.io/team/operator:dev"}}
 	if err := c.Validate(); err != nil {
 		t.Fatal(err)
+	}
+	nvidia := Config{NVIDIAOperator: &NVIDIAOperator{Chart: "./chart"}}
+	if err := nvidia.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	bad := Config{Operator: &AMDOperator{Chart: "./amd"}, NVIDIAOperator: &NVIDIAOperator{Chart: "./nvidia"}}
+	if err := bad.Validate(); err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("Validate() = %v, want operator conflict", err)
 	}
 }
 
