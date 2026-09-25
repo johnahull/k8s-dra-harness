@@ -1,5 +1,8 @@
 # amd-ci: Test Framework for AMD GPU Operator and DRA Driver
 
+> This repository was later renamed to `amd-gpu-e2e`. The original name is
+> retained in this dated design document.
+
 **Date:** 2026-09-25
 **Status:** Draft, awaiting review
 

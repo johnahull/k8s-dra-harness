@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/johnahull/amd-ci/pkg/clients"
+	"github.com/johnahull/amd-gpu-e2e/pkg/clients"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/johnahull/amd-ci/internal/config"
+	"github.com/johnahull/amd-gpu-e2e/internal/config"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	fakediscovery "k8s.io/client-go/discovery/fake"

@@ -7,9 +7,9 @@ import (
 	"flag"
 
 	"github.com/golang/glog"
-	"github.com/johnahull/amd-ci/internal/config"
-	"github.com/johnahull/amd-ci/internal/platform"
-	"github.com/johnahull/amd-ci/pkg/clients"
+	"github.com/johnahull/amd-gpu-e2e/internal/config"
+	"github.com/johnahull/amd-gpu-e2e/internal/platform"
+	"github.com/johnahull/amd-gpu-e2e/pkg/clients"
 	ginkgo "github.com/onsi/ginkgo/v2"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -18,7 +18,7 @@ import (
 var (
 	// APIClient provides access to the cluster.
 	APIClient *clients.Settings
-	// Config holds validated amd-ci settings.
+	// Config holds validated amd-gpu-e2e settings.
 	Config *config.Config
 )
 

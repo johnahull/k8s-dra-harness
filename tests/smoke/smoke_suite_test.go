@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	. "github.com/johnahull/amd-ci/internal/inittools"
+	. "github.com/johnahull/amd-gpu-e2e/internal/inittools"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )

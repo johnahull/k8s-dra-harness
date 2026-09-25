@@ -1,4 +1,4 @@
-// Package config loads amd-ci settings from environment variables.
+// Package config loads amd-gpu-e2e settings from environment variables.
 package config
 
 import (
@@ -53,7 +53,7 @@ const (
 	DefaultWorkloadImage = "docker.io/rocm/dev-ubuntu-22.04:6.4"
 )
 
-// Config holds every amd-ci setting. Fields documented as platform-dependent
+// Config holds every amd-gpu-e2e setting. Fields documented as platform-dependent
 // are empty after Load and filled by ApplyPlatformDefaults.
 type Config struct {
 	Platform        Platform `envconfig:"AMD_PLATFORM"`

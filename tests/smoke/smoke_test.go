@@ -3,9 +3,9 @@
 package smoke
 
 import (
-	"github.com/johnahull/amd-ci/internal/config"
-	"github.com/johnahull/amd-ci/internal/discovery"
-	. "github.com/johnahull/amd-ci/internal/inittools"
+	"github.com/johnahull/amd-gpu-e2e/internal/config"
+	"github.com/johnahull/amd-gpu-e2e/internal/discovery"
+	. "github.com/johnahull/amd-gpu-e2e/internal/inittools"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/api/meta"

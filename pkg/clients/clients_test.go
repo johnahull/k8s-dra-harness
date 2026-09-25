@@ -3,7 +3,7 @@ package clients
 import (
 	"testing"
 
-	amdv1alpha1 "github.com/johnahull/amd-ci/pkg/amdgpu/v1alpha1"
+	amdv1alpha1 "github.com/johnahull/amd-gpu-e2e/pkg/amdgpu/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/runtime"

@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/johnahull/amd-ci/pkg/clients"
+	"github.com/johnahull/amd-gpu-e2e/pkg/clients"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )

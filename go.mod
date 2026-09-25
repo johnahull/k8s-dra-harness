@@ -1,4 +1,4 @@
-module github.com/johnahull/amd-ci
+module github.com/johnahull/amd-gpu-e2e
 
 go 1.25.5
 

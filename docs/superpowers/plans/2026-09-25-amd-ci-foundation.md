@@ -1,5 +1,8 @@
 # amd-ci Foundation Implementation Plan (Plan 1 of 3)
 
+> This repository was later renamed to `amd-gpu-e2e`. Paths and module names
+> in the completed plan record the original implementation.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build the foundation of the `amd-ci` framework: repo tooling, env-var config with platform defaults and validation, OpenShift/Kubernetes detection, API clients, a typed `DeviceConfig` builder, and GPU discovery. It ends with a `smoke` Ginkgo suite that runs against a real cluster.

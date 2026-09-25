@@ -1,5 +1,5 @@
 // Package v1alpha1 is a trimmed copy of the AMD GPU Operator amd.com/v1alpha1
-// API (github.com/ROCm/gpu-operator/api/v1alpha1). Only fields amd-ci reads or
+// API (github.com/ROCm/gpu-operator/api/v1alpha1). Only fields amd-gpu-e2e reads or
 // sets are modeled; updates must go through merge patches (see pkg/amdgpu) so
 // unmodeled fields on the server are preserved.
 package v1alpha1
@@ -25,7 +25,7 @@ type DeviceConfigList struct {
 	Items []DeviceConfig `json:"items"`
 }
 
-// DeviceConfigSpec is the subset of the upstream spec used by amd-ci.
+// DeviceConfigSpec is the subset of the upstream spec used by amd-gpu-e2e.
 type DeviceConfigSpec struct {
 	Driver       DriverSpec        `json:"driver,omitempty"`
 	DevicePlugin DevicePluginSpec  `json:"devicePlugin,omitempty"`
@@ -55,7 +55,7 @@ type DRADriverSpec struct {
 	CmdLineArguments map[string]string `json:"cmdLineArguments,omitempty"`
 }
 
-// DeviceConfigStatus is the subset of the upstream status used by amd-ci.
+// DeviceConfigStatus is the subset of the upstream status used by amd-gpu-e2e.
 type DeviceConfigStatus struct {
 	DevicePlugin     DeploymentStatus        `json:"devicePlugin,omitempty"`
 	Drivers          DeploymentStatus        `json:"driver,omitempty"`

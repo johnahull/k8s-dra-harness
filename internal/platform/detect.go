@@ -4,7 +4,7 @@ package platform
 import (
 	"fmt"
 
-	"github.com/johnahull/amd-ci/internal/config"
+	"github.com/johnahull/amd-gpu-e2e/internal/config"
 	"k8s.io/client-go/discovery"
 )
 

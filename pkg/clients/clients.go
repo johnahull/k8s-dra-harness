@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	amdv1alpha1 "github.com/johnahull/amd-ci/pkg/amdgpu/v1alpha1"
+	amdv1alpha1 "github.com/johnahull/amd-gpu-e2e/pkg/amdgpu/v1alpha1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/kubernetes"
