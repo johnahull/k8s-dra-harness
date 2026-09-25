@@ -7,6 +7,8 @@ import (
 	"testing"
 )
 
+const testBundleImage = "quay.io/x/bundle:1"
+
 // clearEnv unsets every variable Load reads, restoring them when the test ends.
 func clearEnv(t *testing.T) {
 	t.Helper()
@@ -60,7 +62,7 @@ func TestLoadFromEnv(t *testing.T) {
 	t.Setenv("AMD_PLATFORM", "kubernetes")
 	t.Setenv("AMD_CLEANUP", "false")
 	t.Setenv("AMD_OPERATOR_SOURCE", "custom")
-	t.Setenv("AMD_OPERATOR_BUNDLE", "quay.io/x/bundle:1")
+	t.Setenv("AMD_OPERATOR_BUNDLE", testBundleImage)
 	t.Setenv("AMD_DRIVER_MODE", "preinstalled")
 	t.Setenv("AMD_DRA_SOURCE", "helm")
 	t.Setenv("AMD_DRA_ARGS", "v=4, feature-gates=A=true")
@@ -73,7 +75,7 @@ func TestLoadFromEnv(t *testing.T) {
 	if c.Platform != PlatformKubernetes || c.Cleanup {
 		t.Errorf("Platform=%q Cleanup=%v", c.Platform, c.Cleanup)
 	}
-	if c.Operator.Source != OperatorSourceCustom || c.Operator.Bundle != "quay.io/x/bundle:1" {
+	if c.Operator.Source != OperatorSourceCustom || c.Operator.Bundle != testBundleImage {
 		t.Errorf("Operator=%+v", c.Operator)
 	}
 	if c.Driver.Mode != DriverModePreinstalled || c.DRA.Source != DRASourceHelm {

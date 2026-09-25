@@ -60,7 +60,7 @@ func TestValidate(t *testing.T) {
 			name: "custom operator on openshift with bundle", p: PlatformOpenShift,
 			mutate: func(c *Config) {
 				c.Operator.Source = OperatorSourceCustom
-				c.Operator.Bundle = "quay.io/x/bundle:1"
+				c.Operator.Bundle = testBundleImage
 			},
 		},
 		{
@@ -84,7 +84,7 @@ func TestValidate(t *testing.T) {
 		},
 		{
 			name: "bundle on kubernetes", p: PlatformKubernetes,
-			mutate:  func(c *Config) { c.Operator.Bundle = "quay.io/x/bundle:1" },
+			mutate:  func(c *Config) { c.Operator.Bundle = testBundleImage },
 			wantErr: "only supported on OpenShift",
 		},
 		{
