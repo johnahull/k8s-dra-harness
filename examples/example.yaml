@@ -1,0 +1,7 @@
+# Build and run the Kubernetes DRA example driver, which advertises mock GPUs.
+# Replace sourcePath and registry with values available to your environment.
+namespace: dra-harness
+registry: quay.io/my-account
+drivers:
+  - name: example
+    sourcePath: /path/to/dra-example-driver

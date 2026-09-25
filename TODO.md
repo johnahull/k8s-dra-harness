@@ -19,12 +19,12 @@ vet pass, but the smoke and DRA suites have not been run against a live cluster.
 
 ## 2. Prove extensibility with another DRA driver
 
-- [ ] Add a third adapter, preferably for a driver with a mock-device mode, to
+- [x] Add a third adapter, preferably for a driver with a mock-device mode, to
       test the adapter contract without requiring another hardware type.
 - [ ] Verify that its individual workload runs without changing generic
       harness or run-config logic. Register a joint workload only if the pair
       has a meaningful combined check.
-- [ ] Document the adapter authoring steps and the limitations found while
+- [x] Document the adapter authoring steps and the limitations found while
       adding it.
 
 ## 3. Decide how adapters are distributed

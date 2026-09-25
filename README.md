@@ -5,7 +5,9 @@ or OpenShift cluster. The harness can build a local driver checkout, push its
 image to a registry, deploy the matching Helm chart, run that checkout's own
 end-to-end suite, and then run independent live-workload checks. AMD GPU and CPU
 are optional, built-in adapters: select either one or both in `drivers`, or
-select neither for an AMD Operator-only run. Additional drivers can follow the
+select neither for an AMD Operator-only run. The `example` adapter targets the
+Kubernetes mock-device DRA example driver and does not require GPU hardware.
+Additional drivers can follow the
 `internal/driver.Adapter` contract. The adapters are compiled into the harness;
 they are not separately loaded plugins. To add a built-in driver, add a package
 under `internal/driver/` that registers its adapter, then import that package
