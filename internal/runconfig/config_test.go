@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	_ "github.com/johnahull/k8s-dra-harness/internal/adapters/defaults"
 )
 
 func TestLoad(t *testing.T) {

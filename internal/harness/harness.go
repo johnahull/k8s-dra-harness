@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/johnahull/k8s-dra-harness/internal/amdoperator"
 	"github.com/johnahull/k8s-dra-harness/internal/driver"
 	"github.com/johnahull/k8s-dra-harness/internal/runconfig"
 	"github.com/johnahull/k8s-dra-harness/pkg/clients"
@@ -17,10 +18,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/rand"
-	"k8s.io/client-go/dynamic"
 )
 
 // Installed is one driver installed by this run.
@@ -33,20 +31,13 @@ type Installed struct {
 	Release   string
 }
 
-type release struct{ namespace, name string }
-
-const (
-	amdName = "amd"
-	cpuName = "cpu"
-)
-
 // Runner owns only namespaces and Helm releases created during this run.
 type Runner struct {
 	Config           *runconfig.Config
 	Client           *clients.Settings
 	ID               string
 	Drivers          []Installed
-	releases         []release
+	releases         releaseManager
 	namespaces       []string
 	bundlePackage    string
 	bundleNamespace  string
@@ -110,27 +101,19 @@ func (r *Runner) Preflight(ctx context.Context) error {
 		}
 		ns := r.namespace(d.Namespace)
 		name := "dra-" + d.Name + "-" + r.ID
-		if err := availableRelease(ctx, ns, name); err != nil {
+		if err := r.releases.requireAbsent(ctx, release{ns, name}); err != nil {
 			return err
 		}
 	}
 	if r.Config.Operator != nil {
-		dcClient, err := dynamic.NewForConfig(r.Client.Config)
-		if err != nil {
-			return fmt.Errorf("creating AMD API client: %w", err)
-		}
-		configs, err := dcClient.Resource(deviceConfigGVR).Namespace(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
-		if err != nil && !apierrors.IsNotFound(err) {
-			return fmt.Errorf("checking existing DeviceConfigs: %w", err)
-		}
-		if err == nil && len(configs.Items) > 0 {
-			return errors.New("AMD DeviceConfigs already exist; refusing to install another operator")
+		if err := amdoperator.CheckDeviceConfigs(ctx, r.Client.Config); err != nil {
+			return err
 		}
 		if r.Config.Operator.Bundle != "" {
 			if _, err := exec.LookPath("operator-sdk"); err != nil {
 				return fmt.Errorf("operator-sdk is required for bundle installs: %w", err)
 			}
-		} else if err := availableRelease(ctx, r.namespace(r.Config.Operator.Namespace), "amd-operator-"+r.ID); err != nil {
+		} else if err := r.releases.requireAbsent(ctx, release{r.namespace(r.Config.Operator.Namespace), "amd-operator-" + r.ID}); err != nil {
 			return err
 		}
 	}
@@ -145,7 +128,7 @@ func (r *Runner) Start(ctx context.Context) error {
 	}
 	for _, d := range r.Config.Drivers {
 		a, _ := driver.Get(d.Name)
-		image, chart, err := driver.Resolve(ctx, a, d, r.Config.Registry, r.ID)
+		image, chart, err := driver.Resolve(ctx, a, driver.Source{Path: d.SourcePath, Image: d.Image, Chart: d.Chart}, r.Config.Registry, r.ID)
 		if err != nil {
 			return err
 		}
@@ -167,21 +150,11 @@ func (r *Runner) Start(ctx context.Context) error {
 		if err := r.ensureNamespace(ctx, d.Namespace); err != nil {
 			return err
 		}
-		repo, tag, _ := driver.SplitImage(d.Image)
-		values := cloneValues(d.Config.Values)
-		values["image"] = mergeImage(values["image"], repo, tag)
-		if d.Config.Name == cpuName {
-			cpuConfig, _ := values["driverConfig"].(map[string]any)
-			if cpuConfig == nil {
-				cpuConfig = map[string]any{}
-			}
-			if _, ok := cpuConfig["cpuDeviceMode"]; !ok {
-				cpuConfig["cpuDeviceMode"] = "individual"
-			}
-			values["driverConfig"] = cpuConfig
+		values, err := d.Adapter.Values(d.Config.Values, d.Image)
+		if err != nil {
+			return fmt.Errorf("preparing %s values: %w", d.Config.Name, err)
 		}
-		r.releases = append(r.releases, release{d.Namespace, d.Release})
-		if err := helmInstall(ctx, d.Release, d.Chart, d.Namespace, values); err != nil {
+		if err := r.releases.installRelease(ctx, release{d.Namespace, d.Release}, d.Chart, values); err != nil {
 			return err
 		}
 	}
@@ -233,44 +206,15 @@ func (r *Runner) installOperator(ctx context.Context) error {
 		if err := run(ctx, "operator-sdk", "run", "bundle", o.Bundle, "--namespace", ns, "--timeout", "10m"); err != nil {
 			return err
 		}
-		spec := cloneValues(o.DeviceConfig)
-		for _, d := range r.Config.Drivers {
-			if d.Name == amdName {
-				setValue(spec, false, "devicePlugin", "enableDevicePlugin")
-				setValue(spec, false, "draDriver", "enable")
-				break
-			}
-		}
+		spec := amdoperator.DeviceConfigSpec(o.DeviceConfig, amdoperator.HasStandaloneDriver(r.Config.Drivers))
 		return r.createDeviceConfig(ctx, ns, spec)
 	}
-	values := cloneValues(o.Values)
-	for _, d := range r.Config.Drivers {
-		if d.Name == amdName {
-			setValue(values, false, "deviceConfig", "spec", "devicePlugin", "enableDevicePlugin")
-			setValue(values, false, "deviceConfig", "spec", "draDriver", "enable")
-			break
-		}
-	}
-	if o.Image != "" {
-		repo, tag, err := driver.SplitImage(o.Image)
-		if err != nil {
-			return err
-		}
-		cm, _ := values["controllerManager"].(map[string]any)
-		if cm == nil {
-			cm = map[string]any{}
-		}
-		manager, _ := cm["manager"].(map[string]any)
-		if manager == nil {
-			manager = map[string]any{}
-		}
-		manager["image"] = map[string]any{"repository": repo, "tag": tag}
-		cm["manager"] = manager
-		values["controllerManager"] = cm
+	values, err := amdoperator.ChartValues(o, amdoperator.HasStandaloneDriver(r.Config.Drivers))
+	if err != nil {
+		return err
 	}
 	name := "amd-operator-" + r.ID
-	r.releases = append(r.releases, release{ns, name})
-	if err := helmInstall(ctx, name, o.Chart, ns, values); err != nil {
+	if err := r.releases.installRelease(ctx, release{ns, name}, o.Chart, values); err != nil {
 		return err
 	}
 	return nil
@@ -279,14 +223,9 @@ func (r *Runner) installOperator(ctx context.Context) error {
 // Cleanup releases resources in reverse order, continuing after errors.
 func (r *Runner) Cleanup(ctx context.Context) error {
 	var problems []error
-	for i := len(r.releases) - 1; i >= 0; i-- {
-		rel := r.releases[i]
-		if err := availableRelease(ctx, rel.namespace, rel.name); err == nil {
-			continue
-		}
-		if err := run(ctx, "helm", "uninstall", rel.name, "--namespace", rel.namespace, "--wait", "--timeout", "10m"); err != nil {
-			problems = append(problems, err)
-		}
+	releaseErr := r.releases.cleanup(ctx)
+	if releaseErr != nil {
+		problems = append(problems, releaseErr)
 	}
 	if r.bundlePackage != "" {
 		if r.deviceConfigName != "" {
@@ -305,6 +244,11 @@ func (r *Runner) Cleanup(ctx context.Context) error {
 			problems = append(problems, err)
 		}
 	}
+	// Leave owned namespaces available for a retry if any resource cleanup
+	// failed, including an unknown Helm state.
+	if len(problems) > 0 {
+		return errors.Join(problems...)
+	}
 	for i := len(r.namespaces) - 1; i >= 0; i-- {
 		name := r.namespaces[i]
 		if err := r.Client.K8s.CoreV1().Namespaces().Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
@@ -314,65 +258,17 @@ func (r *Runner) Cleanup(ctx context.Context) error {
 	return errors.Join(problems...)
 }
 
-var deviceConfigGVR = schema.GroupVersionResource{Group: "amd.com", Version: "v1alpha1", Resource: "deviceconfigs"}
-
 func (r *Runner) createDeviceConfig(ctx context.Context, namespace string, spec map[string]any) error {
-	client, err := dynamic.NewForConfig(r.Client.Config)
-	if err != nil {
-		return err
-	}
 	name := "dra-harness-" + r.ID
-	obj := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "amd.com/v1alpha1", "kind": "DeviceConfig", "metadata": map[string]any{"name": name, "namespace": namespace}, "spec": spec}}
-	if _, err := client.Resource(deviceConfigGVR).Namespace(namespace).Create(ctx, obj, metav1.CreateOptions{}); err != nil {
-		return fmt.Errorf("creating DeviceConfig: %w", err)
+	if err := amdoperator.CreateDeviceConfig(ctx, r.Client.Config, namespace, name, spec); err != nil {
+		return err
 	}
 	r.deviceConfigName = name
 	return nil
 }
 
 func (r *Runner) deleteDeviceConfig(ctx context.Context) error {
-	client, err := dynamic.NewForConfig(r.Client.Config)
-	if err != nil {
-		return err
-	}
-	if err := client.Resource(deviceConfigGVR).Namespace(r.bundleNamespace).Delete(ctx, r.deviceConfigName, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
-		return fmt.Errorf("deleting DeviceConfig %s: %w", r.deviceConfigName, err)
-	}
-	return nil
-}
-
-func cloneValues(in map[string]any) map[string]any {
-	out := make(map[string]any, len(in))
-	for k, v := range in {
-		if nested, ok := v.(map[string]any); ok {
-			out[k] = cloneValues(nested)
-		} else {
-			out[k] = v
-		}
-	}
-	return out
-}
-
-func setValue(values map[string]any, value any, path ...string) {
-	current := values
-	for _, key := range path[:len(path)-1] {
-		next, _ := current[key].(map[string]any)
-		if next == nil {
-			next = map[string]any{}
-			current[key] = next
-		}
-		current = next
-	}
-	current[path[len(path)-1]] = value
-}
-
-func mergeImage(existing any, repo, tag string) map[string]any {
-	out, _ := existing.(map[string]any)
-	if out == nil {
-		out = map[string]any{}
-	}
-	out["repository"], out["tag"] = repo, tag
-	return out
+	return amdoperator.DeleteDeviceConfig(ctx, r.Client.Config, r.bundleNamespace, r.deviceConfigName)
 }
 
 func helmInstall(ctx context.Context, name, chart, namespace string, values map[string]any) error {
@@ -432,18 +328,6 @@ func prepareChart(ctx context.Context, chart string) error {
 		}
 	}
 	return runEnv(ctx, env, "helm", "dependency", "build", chart)
-}
-
-func availableRelease(ctx context.Context, namespace, name string) error {
-	cmd := exec.CommandContext(ctx, "helm", "list", "--all", "--namespace", namespace, "--filter", "^"+name+"$", "--short")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("checking Helm release: %w: %s", err, out)
-	}
-	if strings.TrimSpace(string(out)) != "" {
-		return fmt.Errorf("helm release %s/%s already exists", namespace, name)
-	}
-	return nil
 }
 
 func run(ctx context.Context, name string, args ...string) error {

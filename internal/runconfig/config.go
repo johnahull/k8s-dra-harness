@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/johnahull/k8s-dra-harness/internal/driver"
 	"gopkg.in/yaml.v3"
 	"k8s.io/apimachinery/pkg/util/validation"
 )
@@ -91,8 +92,8 @@ func (c *Config) Validate() error {
 	}
 	seen := map[string]bool{}
 	for _, d := range c.Drivers {
-		if d.Name != "amd" && d.Name != "cpu" {
-			problems = append(problems, fmt.Errorf("unsupported driver %q (supported: amd, cpu)", d.Name))
+		if _, err := driver.Get(d.Name); err != nil {
+			problems = append(problems, err)
 		}
 		if seen[d.Name] {
 			problems = append(problems, fmt.Errorf("duplicate driver %q", d.Name))

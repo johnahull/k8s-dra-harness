@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	_ "github.com/johnahull/k8s-dra-harness/internal/adapters/defaults"
 	"github.com/johnahull/k8s-dra-harness/internal/harness"
 	"github.com/johnahull/k8s-dra-harness/internal/runconfig"
 	. "github.com/onsi/ginkgo/v2"
@@ -73,9 +74,9 @@ var _ = Describe("selected drivers", Ordered, func() {
 		Expect(runner.RunOperatorWorkload(ctx)).To(Succeed())
 	})
 
-	It("allocates AMD GPU and CPU to one workload", func(ctx SpecContext) {
-		if len(runner.Drivers) != 2 {
-			Skip("requires both AMD and CPU")
+	It("allocates a supported driver pair to one workload", func(ctx SpecContext) {
+		if !runner.SupportsJointWorkload() {
+			Skip("selected drivers have no joint workload")
 		}
 		Expect(runner.RunJointWorkload(ctx)).To(Succeed())
 	})
