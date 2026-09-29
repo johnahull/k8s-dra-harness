@@ -21,6 +21,7 @@ type Config struct {
 	Existing       bool            `yaml:"existing"`
 	Preflight      bool            `yaml:"preflight"`
 	Workload       string          `yaml:"workload"`
+	TestPlan       *TestPlan       `yaml:"testPlan"`
 	KubeVirt       *KubeVirt       `yaml:"kubevirt"`
 	Drivers        []Driver        `yaml:"drivers"`
 	Operator       *AMDOperator    `yaml:"amdOperator"`
@@ -65,8 +66,55 @@ type Driver struct {
 	Image         string         `yaml:"image"`
 	Chart         string         `yaml:"chart"`
 	Namespace     string         `yaml:"namespace"`
+	PodSelector   string         `yaml:"podSelector"`
 	Values        map[string]any `yaml:"values"`
 	UpstreamTests []string       `yaml:"upstreamTests"`
+}
+
+// TestPlan selects live, namespace-scoped DRA scenarios to run after driver
+// setup. It is intentionally separate from Workload: the regular workload is
+// a smoke check, while a plan can create several claims and expected-pending
+// consumers.
+type TestPlan struct {
+	Profile       string               `yaml:"profile"`
+	Scenarios     []string             `yaml:"scenarios"`
+	WorkloadImage string               `yaml:"workloadImage"`
+	Lifecycle     TestPlanLifecycle    `yaml:"lifecycle"`
+	Verification  TestPlanVerification `yaml:"verification"`
+	Topology      []TopologyCase       `yaml:"topology"`
+}
+
+// TestPlanLifecycle controls mutations outside the normal harness install.
+// Existing-driver runs require these explicit opt-ins.
+type TestPlanLifecycle struct {
+	AllowWorkloads bool `yaml:"allowWorkloads"`
+	AllowRestart   bool `yaml:"allowRestart"`
+}
+
+// TestPlanVerification configures the external topology verification scripts.
+type TestPlanVerification struct {
+	ScriptsDir         string     `yaml:"scriptsDir"`
+	ExpectedRepoCommit string     `yaml:"expectedRepoCommit"`
+	EvidenceDir        string     `yaml:"evidenceDir"`
+	Commands           [][]string `yaml:"commands"`
+}
+
+// TopologyCase describes one multi-request ResourceClaim scenario. Device
+// classes may refer to drivers installed outside this harness.
+type TopologyCase struct {
+	Name           string            `yaml:"name"`
+	UseTemplate    bool              `yaml:"useTemplate"`
+	Requests       []TopologyRequest `yaml:"requests"`
+	MatchAttribute string            `yaml:"matchAttribute"`
+	Expected       string            `yaml:"expected"`
+}
+
+// TopologyRequest is one named request in a TopologyCase.
+type TopologyRequest struct {
+	Name        string `yaml:"name"`
+	DeviceClass string `yaml:"deviceClass"`
+	Count       int64  `yaml:"count"`
+	Selector    string `yaml:"selector"`
 }
 
 // AMDOperator is an optional prerequisite for an operator-managed AMD driver.
@@ -118,6 +166,14 @@ func Load(path string) (*Config, error) {
 	}
 	if c.NVIDIAOperator != nil && strings.HasPrefix(c.NVIDIAOperator.Chart, ".") && !filepath.IsAbs(c.NVIDIAOperator.Chart) {
 		c.NVIDIAOperator.Chart = filepath.Join(base, c.NVIDIAOperator.Chart)
+	}
+	if c.TestPlan != nil {
+		if c.TestPlan.Verification.ScriptsDir != "" && !filepath.IsAbs(c.TestPlan.Verification.ScriptsDir) {
+			c.TestPlan.Verification.ScriptsDir = filepath.Join(base, c.TestPlan.Verification.ScriptsDir)
+		}
+		if c.TestPlan.Verification.EvidenceDir != "" && !filepath.IsAbs(c.TestPlan.Verification.EvidenceDir) {
+			c.TestPlan.Verification.EvidenceDir = filepath.Join(base, c.TestPlan.Verification.EvidenceDir)
+		}
 	}
 	if c.Namespace == "" {
 		c.Namespace = "dra-harness"
@@ -192,6 +248,104 @@ func (c *Config) Validate() error {
 	} else if c.KubeVirt != nil {
 		problems = append(problems, errors.New("kubevirt configuration requires workload: kubevirt"))
 	}
+	if c.TestPlan != nil {
+		if c.Workload == WorkloadKubeVirt {
+			problems = append(problems, errors.New("testPlan cannot be combined with workload: kubevirt"))
+		}
+		if c.Preflight {
+			problems = append(problems, errors.New("testPlan cannot run in preflight mode"))
+		}
+		if len(c.Drivers) == 0 {
+			problems = append(problems, errors.New("testPlan requires at least one driver"))
+		}
+		if c.TestPlan.Profile == "" {
+			problems = append(problems, errors.New("testPlan requires profile"))
+		}
+		if len(c.TestPlan.Scenarios) == 0 {
+			problems = append(problems, errors.New("testPlan requires at least one scenario"))
+		}
+		validScenarios := map[string]bool{
+			"resource-slices": true, "counters": true, "sibling-exclusion": true,
+			"capacity": true, "release": true, "restart": true, "topology": true,
+		}
+		hasAMDDriver := false
+		for _, driver := range c.Drivers {
+			if driver.Name == "amd" {
+				hasAMDDriver = true
+				break
+			}
+		}
+		for _, scenario := range c.TestPlan.Scenarios {
+			if !validScenarios[scenario] {
+				problems = append(problems, fmt.Errorf("unsupported testPlan scenario %q", scenario))
+			}
+			if (scenario == "sibling-exclusion" || scenario == "capacity") && !hasAMDDriver {
+				problems = append(problems, fmt.Errorf("testPlan scenario %q requires the amd driver", scenario))
+			}
+			if scenario == "topology" && len(c.TestPlan.Topology) == 0 {
+				problems = append(problems, errors.New("testPlan topology scenario requires topology cases"))
+			}
+		}
+		if c.TestPlan.Lifecycle.AllowRestart && !c.TestPlan.Lifecycle.AllowWorkloads {
+			problems = append(problems, errors.New("testPlan lifecycle allowRestart requires allowWorkloads"))
+		}
+		if !c.TestPlan.Lifecycle.AllowWorkloads {
+			for _, scenario := range c.TestPlan.Scenarios {
+				if scenario != "resource-slices" && scenario != "counters" {
+					problems = append(problems, fmt.Errorf("testPlan scenario %q requires lifecycle.allowWorkloads: true", scenario))
+				}
+			}
+		}
+		for i, topology := range c.TestPlan.Topology {
+			if topology.Name == "" {
+				problems = append(problems, fmt.Errorf("testPlan topology[%d] requires name", i))
+			} else if len(validation.IsDNS1123Label(topology.Name)) > 0 {
+				problems = append(problems, fmt.Errorf("testPlan topology %q name must be a DNS label", topology.Name))
+			}
+			if len(topology.Requests) < 2 {
+				problems = append(problems, fmt.Errorf("testPlan topology %q requires at least two requests", topology.Name))
+			}
+			if topology.Expected != "" && topology.Expected != "success" && topology.Expected != "pending" {
+				problems = append(problems, fmt.Errorf("testPlan topology %q expected must be success or pending", topology.Name))
+			}
+			if topology.MatchAttribute != "" && len(validation.IsQualifiedName(topology.MatchAttribute)) > 0 {
+				problems = append(problems, fmt.Errorf("testPlan topology %q matchAttribute must be a qualified name", topology.Name))
+			}
+			seenRequests := map[string]bool{}
+			for _, request := range topology.Requests {
+				if request.Name == "" || request.DeviceClass == "" {
+					problems = append(problems, fmt.Errorf("testPlan topology %q requests require name and deviceClass", topology.Name))
+				}
+				if request.DeviceClass != "" && len(validation.IsDNS1123Subdomain(request.DeviceClass)) > 0 {
+					problems = append(problems, fmt.Errorf("testPlan topology %q request %q deviceClass must be a DNS subdomain", topology.Name, request.Name))
+				}
+				if request.Name != "" && len(validation.IsDNS1123Label(request.Name)) > 0 {
+					problems = append(problems, fmt.Errorf("testPlan topology %q request %q name must be a DNS label", topology.Name, request.Name))
+				}
+				if request.Count < 0 {
+					problems = append(problems, fmt.Errorf("testPlan topology %q request %q count must not be negative", topology.Name, request.Name))
+				}
+				if seenRequests[request.Name] {
+					problems = append(problems, fmt.Errorf("testPlan topology %q has duplicate request %q", topology.Name, request.Name))
+				}
+				seenRequests[request.Name] = true
+			}
+		}
+		if c.TestPlan.Verification.ExpectedRepoCommit != "" && c.TestPlan.Verification.ScriptsDir == "" {
+			problems = append(problems, errors.New("testPlan verification expectedRepoCommit requires scriptsDir"))
+		}
+		if c.TestPlan.Verification.ScriptsDir != "" && c.TestPlan.Verification.EvidenceDir == "" {
+			problems = append(problems, errors.New("testPlan verification scriptsDir requires evidenceDir"))
+		}
+		if len(c.TestPlan.Verification.Commands) > 0 && c.TestPlan.Verification.ScriptsDir == "" {
+			problems = append(problems, errors.New("testPlan verification commands require scriptsDir"))
+		}
+		for i, command := range c.TestPlan.Verification.Commands {
+			if len(command) == 0 || strings.TrimSpace(command[0]) == "" {
+				problems = append(problems, fmt.Errorf("testPlan verification command[%d] requires an executable", i))
+			}
+		}
+	}
 	seen := map[string]bool{}
 	for _, d := range c.Drivers {
 		if _, err := driver.Get(d.Name); err != nil {
@@ -207,6 +361,9 @@ func (c *Config) Validate() error {
 			}
 			if d.SourcePath != "" || d.Image != "" || d.Chart != "" {
 				problems = append(problems, fmt.Errorf("existing driver %q must not specify sourcePath, image, or chart", d.Name))
+			}
+			if d.PodSelector == "" && c.TestPlan != nil && c.TestPlan.Lifecycle.AllowRestart {
+				problems = append(problems, fmt.Errorf("existing driver %q requires podSelector for testPlan restart", d.Name))
 			}
 		} else {
 			if (d.SourcePath == "") == (d.Image == "") {

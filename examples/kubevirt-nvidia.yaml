@@ -1,7 +1,7 @@
 # KubeVirt example: run the NVIDIA DRA claim through a direct VMI.
-# The cloud-init Secret must install the SSH public key matching id_rsa and
-# execute the guest command's GPU check. The private key Secret is read only
-# by the harness for virtctl ssh verification.
+# The cloud-init Secret must install the SSH public key matching id_rsa. The
+# configured guest command runs through virtctl after the VMI starts. The
+# private key Secret is read only by the harness for virtctl ssh verification.
 namespace: dra-harness
 registry: quay.io/my-account
 workload: kubevirt

@@ -89,20 +89,8 @@ func (r *Runner) Preflight(ctx context.Context) error {
 			}
 		}
 	}
-	groups, err := r.Client.Discovery.ServerGroups()
-	if err != nil {
-		return fmt.Errorf("discovering cluster APIs: %w", err)
-	}
-	for _, g := range groups.Groups {
-		if g.Name == "config.openshift.io" {
-			r.openshift = true
-			break
-		}
-	}
-	if r.openshift {
-		if _, err := exec.LookPath("oc"); err != nil {
-			return fmt.Errorf("oc is required for OpenShift SCC setup: %w", err)
-		}
+	if err := r.detectPlatform(ctx); err != nil {
+		return err
 	}
 	if r.Config.Operator != nil {
 		if r.Config.Operator.Bundle != "" && !r.openshift {
@@ -160,6 +148,26 @@ func (r *Runner) Preflight(ctx context.Context) error {
 		}
 		if err := r.releases.requireAbsent(ctx, release{r.namespace(r.Config.NVIDIAOperator.Namespace), "nvidia-operator-" + r.ID}); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func (r *Runner) detectPlatform(ctx context.Context) error {
+	groups, err := r.Client.Discovery.ServerGroups()
+	if err != nil {
+		return fmt.Errorf("discovering cluster APIs: %w", err)
+	}
+	r.openshift = false
+	for _, group := range groups.Groups {
+		if group.Name == "config.openshift.io" {
+			r.openshift = true
+			break
+		}
+	}
+	if r.openshift {
+		if _, err := exec.LookPath("oc"); err != nil {
+			return fmt.Errorf("oc is required for OpenShift SCC setup: %w", err)
 		}
 	}
 	return nil

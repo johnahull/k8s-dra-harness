@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/johnahull/k8s-dra-harness/internal/kubevirt"
 	"github.com/johnahull/k8s-dra-harness/internal/nvidiaoperator"
 	"github.com/johnahull/k8s-dra-harness/internal/runconfig"
+	"github.com/johnahull/k8s-dra-harness/internal/testplan"
 	corev1 "k8s.io/api/core/v1"
 	resourcev1 "k8s.io/api/resource/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -158,6 +160,58 @@ func (r *Runner) RunOperatorWorkload(ctx context.Context) error {
 		return nvidiaoperator.RunWorkload(ctx, r.Client, r.WorkloadNamespace(), r.ID)
 	}
 	return amdoperator.RunWorkload(ctx, r.Client, r.WorkloadNamespace(), r.ID)
+}
+
+// RunTestPlan executes the configured namespace-scoped DRA scenarios. Existing
+// driver runs may use this path only when the plan explicitly enables
+// workloads; driver restart additionally requires allowRestart.
+func (r *Runner) RunTestPlan(ctx context.Context) (runErr error) {
+	if r.Config.TestPlan == nil {
+		return nil
+	}
+	if len(r.Config.TestPlan.Scenarios) == 0 {
+		return fmt.Errorf("testPlan requires at least one scenario")
+	}
+	if !r.Config.TestPlan.Lifecycle.AllowWorkloads {
+		for _, scenario := range r.Config.TestPlan.Scenarios {
+			if scenario != "resource-slices" && scenario != "counters" {
+				return fmt.Errorf("test plan scenario %q requires lifecycle.allowWorkloads: true", scenario)
+			}
+		}
+	}
+	createdNamespace := false
+	if r.Config.Existing && r.Config.TestPlan.Lifecycle.AllowWorkloads {
+		if err := r.detectPlatform(ctx); err != nil {
+			return err
+		}
+		before := len(r.namespaces)
+		if err := r.ensureNamespace(ctx, r.WorkloadNamespace()); err != nil {
+			return fmt.Errorf("creating test plan namespace: %w", err)
+		}
+		createdNamespace = len(r.namespaces) > before
+	}
+	if createdNamespace {
+		defer func() {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			if err := r.Client.K8s.CoreV1().Namespaces().Delete(cleanupCtx, r.WorkloadNamespace(), metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+				runErr = errors.Join(runErr, fmt.Errorf("deleting test plan namespace %s: %w", r.WorkloadNamespace(), err))
+			}
+		}()
+	}
+	targets := make([]testplan.DriverTarget, 0, len(r.Drivers))
+	for _, d := range r.Drivers {
+		selector := d.Config.PodSelector
+		if selector == "" && d.Release != "" {
+			selector = "app.kubernetes.io/instance=" + d.Release
+		}
+		targets = append(targets, testplan.DriverTarget{Name: d.Config.Name, Namespace: d.Namespace, Selector: selector})
+	}
+	plan, err := testplan.New(r.Client, r.Config.TestPlan, r.WorkloadNamespace(), r.Client.Kubeconfig)
+	if err != nil {
+		return err
+	}
+	return plan.Run(ctx, targets)
 }
 
 func (r *Runner) runWorkload(ctx context.Context, selected []Installed) error {

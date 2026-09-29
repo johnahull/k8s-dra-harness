@@ -131,3 +131,81 @@ func TestKubeVirtRejectsCPUDriver(t *testing.T) {
 		t.Fatalf("Validate() error = %v, want KubeVirt CPU rejection", err)
 	}
 }
+
+func TestTestPlanLoadResolvesPaths(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "run.yaml")
+	data := `registry: quay.io/user
+drivers:
+  - name: amd
+    sourcePath: ./amd
+testPlan:
+  profile: amd-pr-91-topology
+  scenarios: [resource-slices, counters]
+  verification:
+    scriptsDir: ./scripts
+    evidenceDir: ./evidence
+`
+	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := c.TestPlan.Verification.ScriptsDir, filepath.Join(dir, "scripts"); got != want {
+		t.Fatalf("scriptsDir=%q, want %q", got, want)
+	}
+	if got, want := c.TestPlan.Verification.EvidenceDir, filepath.Join(dir, "evidence"); got != want {
+		t.Fatalf("evidenceDir=%q, want %q", got, want)
+	}
+}
+
+func TestTestPlanValidation(t *testing.T) {
+	base := Config{Drivers: []Driver{{Name: "amd", Image: "quay.io/user/amd:dev", Chart: "oci://example/amd"}}}
+	tests := []struct {
+		name   string
+		mutate func(*Config)
+		want   string
+	}{
+		{"missing profile", func(c *Config) { c.TestPlan = &TestPlan{Scenarios: []string{"resource-slices"}} }, "requires profile"},
+		{"unknown scenario", func(c *Config) { c.TestPlan = &TestPlan{Profile: "x", Scenarios: []string{"unknown"}} }, "unsupported testPlan scenario"},
+		{"restart permission", func(c *Config) {
+			c.TestPlan = &TestPlan{Profile: "x", Scenarios: []string{"restart"}, Lifecycle: TestPlanLifecycle{AllowRestart: true}}
+		}, "allowRestart requires allowWorkloads"},
+		{"workload permission", func(c *Config) {
+			c.TestPlan = &TestPlan{Profile: "x", Scenarios: []string{"release"}}
+		}, "requires lifecycle.allowWorkloads"},
+		{"AMD scenario driver", func(c *Config) {
+			c.Drivers = []Driver{{Name: "cpu", Image: "quay.io/user/cpu:dev", Chart: "oci://example/cpu"}}
+			c.TestPlan = &TestPlan{Profile: "x", Scenarios: []string{"capacity"}, Lifecycle: TestPlanLifecycle{AllowWorkloads: true}}
+		}, "requires the amd driver"},
+		{"scripts evidence", func(c *Config) {
+			c.TestPlan = &TestPlan{Profile: "x", Scenarios: []string{"resource-slices"}, Verification: TestPlanVerification{ScriptsDir: "/tmp/scripts"}}
+		}, "scriptsDir requires evidenceDir"},
+		{"topology request", func(c *Config) {
+			c.TestPlan = &TestPlan{Profile: "x", Scenarios: []string{"topology"}, Topology: []TopologyCase{{Name: "bad", Requests: []TopologyRequest{{Name: "gpu"}}}}}
+		}, "require name and deviceClass"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := base
+			tt.mutate(&c)
+			if err := c.Validate(); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Validate()=%v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestTestPlanRejectsKubeVirt(t *testing.T) {
+	c := Config{
+		Workload: WorkloadKubeVirt,
+		KubeVirt: &KubeVirt{Image: "quay.io/containerdisks/fedora:latest"},
+		Drivers:  []Driver{{Name: "amd", Image: "quay.io/user/amd:dev", Chart: "oci://example/amd"}},
+		TestPlan: &TestPlan{Profile: "x", Scenarios: []string{"resource-slices"}},
+	}
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "testPlan cannot be combined") {
+		t.Fatalf("Validate()=%v, want KubeVirt/testPlan conflict", err)
+	}
+}

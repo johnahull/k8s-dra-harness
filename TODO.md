@@ -80,3 +80,13 @@ smoke suite has not yet been run against a live cluster.
       cluster.
 - [ ] Add guest image/cloud-init fixtures and capture VMI, virt-launcher, and
       ResourceClaim artifacts for failed runs.
+
+## 7. Reusable DRA scenario plans
+
+- [x] Add YAML-configured ResourceSlice, shared-counter, sibling-exclusion,
+      capacity, release, restart, and multi-request topology scenarios with
+      per-run cleanup and explicit lifecycle opt-ins for existing clusters.
+- [x] Invoke pinned, read-only topology verification scripts and save
+      ResourceSlice/ResourceClaim snapshots with command evidence.
+- [ ] Run the AMD PR #91 plus topology plan against an AMD GPU cluster and
+      record driver-specific prerequisites or unsupported scenarios.

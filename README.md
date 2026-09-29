@@ -24,6 +24,11 @@ settings. AMD workloads need GPU nodes with a working amdgpu kernel driver.
 NVIDIA runs need the NVIDIA GPU Operator chart and a working NVIDIA
 driver/toolkit on the target nodes.
 
+For step-by-step usage, shared-cluster safety guidance, troubleshooting, and
+configuration guidance, see the [user guide](docs/user-guide.md). The user
+guide is the canonical reference for shared-cluster modes and DRA test-plan
+behavior.
+
 KubeVirt runs additionally need an installed KubeVirt or OpenShift
 Virtualization deployment with Kubernetes DRA enabled and the matching
 `GPUsWithDRA` or `HostDevicesWithDRA` feature gate. The harness does not install
@@ -48,15 +53,20 @@ the checkout chart by default and push a unique image tag under `registry`.
 The harness fails before deployment if the target DeviceClass already exists.
 It removes only releases and namespaces owned by the run. If Helm cannot confirm
 a release's state during cleanup, the harness reports the error and retains its
-namespaces for a retry. Set
-`cleanup: false` to inspect them afterward.
+namespace for inspection. Ownership is not persisted for a later cleanup-only
+retry, so resolve the Helm/API problem and inspect the retained release and
+namespace manually before another run. Set `cleanup: false` to inspect them
+intentionally afterward.
 For local charts with dependencies, it runs `helm dependency build` in the
 checkout before installing.
 
 For a driver already installed on a shared cluster, set `existing: true` and
-provide each driver's existing `namespace`. This is a read-only DRA
-validation: it checks the GA DRA API, DeviceClass, and nonempty ResourceSlices,
-and skips installation, workloads, upstream commands, and cleanup.
+provide each driver's existing `namespace`. Without a `testPlan`, this is a
+read-only DRA validation: it checks the GA DRA API, DeviceClass, and nonempty
+ResourceSlices, and skips installation, workloads, upstream commands, and
+cleanup. An existing-driver run with a `testPlan` can create a temporary
+workload namespace and mutate claims, pods, or driver pods when its explicit
+lifecycle permissions allow those actions.
 
 For a prospective installation, set `preflight: true` with the normal driver
 `image`/`chart` or `sourcePath` configuration. Preflight checks cluster/API
@@ -113,6 +123,47 @@ NVIDIA GPU allocation is experimental in the checked-out upstream driver.
 Pin the NVIDIA Operator and DRA driver checkouts or image/chart revisions when
 using this in repeatable CI, and treat the live NVIDIA run as hardware-specific
 validation rather than a production support guarantee.
+
+### DRA test plans
+
+The optional `testPlan` block runs namespace-scoped DRA allocation scenarios
+after driver setup. It is also usable with `existing: true`, but claim,
+workload, and driver-restart mutations require explicit lifecycle opt-in.
+
+```yaml
+existing: true
+drivers:
+  - name: amd
+    namespace: kube-amd-gpu
+    podSelector: app.kubernetes.io/name=k8s-gpu-dra-driver
+testPlan:
+  profile: amd-pr-91-topology
+  scenarios: [resource-slices, counters, sibling-exclusion, release, topology]
+  lifecycle:
+    allowWorkloads: true
+  verification:
+    scriptsDir: /home/jhull/devel/dra-topology-aware-co-placement/testing/scripts
+    expectedRepoCommit: <topology-repository-commit>
+    evidenceDir: /tmp/dra-harness-evidence
+  topology:
+    - name: gpu-cpu-numa
+      matchAttribute: resource.kubernetes.io/numaNode
+      requests:
+        - name: gpu
+          deviceClass: gpu.amd.com
+        - name: cpu
+          deviceClass: dra.cpu
+```
+
+The harness records ResourceSlice and ResourceClaim JSON snapshots and invokes
+the topology repository's verifier tools when `scriptsDir` is configured. With
+the default commands, `dra-verify.sh` and `show-dra-topology.sh` run for the
+applicable scenarios, while `dra-counters.py` runs for the `counters`
+scenario. Custom `verification.commands` replace the default verifier list.
+The verifier checkout commit is recorded with the evidence and can be pinned
+with `expectedRepoCommit`. The topology demo script is not invoked directly
+because its broad cleanup is unsafe on shared namespaces; its claim cases are
+implemented by the harness instead.
 
 See [development TODOs](TODO.md),
 [the design](docs/superpowers/specs/2026-09-25-k8s-dra-harness-design.md)

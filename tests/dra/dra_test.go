@@ -82,6 +82,16 @@ var _ = Describe("selected drivers", Ordered, func() {
 		}
 	})
 
+	It("runs the configured DRA test plan", func(ctx SpecContext) {
+		if runner.Config.TestPlan == nil {
+			Skip("no testPlan configured")
+		}
+		if runner.Config.Preflight {
+			Skip("preflight mode does not run test plans")
+		}
+		Expect(runner.RunTestPlan(ctx)).To(Succeed())
+	})
+
 	It("runs a live workload for each driver", func(ctx SpecContext) {
 		if runner.Config.Existing || runner.Config.Preflight {
 			Skip("non-installation mode is read-only")
