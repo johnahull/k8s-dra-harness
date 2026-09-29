@@ -19,7 +19,7 @@ func TestLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Drivers[0].SourcePath != filepath.Join(dir, "cpu") || !c.ShouldCleanup() {
+	if c.Drivers[0].SourcePath != filepath.Join(dir, "cpu") || c.Workload != WorkloadPod || !c.ShouldCleanup() {
 		t.Fatalf("unexpected config: %+v", c)
 	}
 }
@@ -91,5 +91,43 @@ func TestPreflightConfig(t *testing.T) {
 	bad.Existing = true
 	if err := bad.Validate(); err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
 		t.Fatalf("Validate() = %v, want mode conflict", err)
+	}
+}
+
+func TestKubeVirtConfig(t *testing.T) {
+	c := Config{
+		Workload: WorkloadKubeVirt,
+		KubeVirt: &KubeVirt{Namespace: "dra-kubevirt", Image: "quay.io/containerdisks/fedora:latest", Guest: &KubeVirtGuest{
+			Username: "fedora", PrivateKeySecret: "ssh-key", Command: "nvidia-smi -L && echo PASS",
+		}},
+		Drivers: []Driver{{Name: "nvidia", Image: "quay.io/example/nvidia:dev", Chart: "oci://example/nvidia"}},
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if c.KubeVirt.Attachment != KubeVirtAttachmentGPU || c.KubeVirt.Guest.PrivateKeyKey != "id_rsa" || c.KubeVirt.Guest.ExpectedOutput != "PASS" {
+		t.Fatalf("unexpected KubeVirt defaults: %+v", c.KubeVirt)
+	}
+	withoutNamespace := c
+	withoutNamespace.KubeVirt.Namespace = ""
+	if err := withoutNamespace.Validate(); err == nil || !strings.Contains(err.Error(), "namespace is required") {
+		t.Fatalf("Validate() = %v, want namespace requirement", err)
+	}
+
+	bad := c
+	bad.Workload = WorkloadPod
+	if err := bad.Validate(); err == nil || !strings.Contains(err.Error(), "requires workload") {
+		t.Fatalf("Validate() = %v, want workload mismatch", err)
+	}
+}
+
+func TestKubeVirtRejectsCPUDriver(t *testing.T) {
+	c := Config{
+		Workload: WorkloadKubeVirt,
+		KubeVirt: &KubeVirt{Image: "quay.io/containerdisks/fedora:latest"},
+		Drivers:  []Driver{{Name: "cpu", Image: "quay.io/example/cpu:dev", Chart: "oci://example/cpu"}},
+	}
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), `kubevirt workload does not support driver "cpu"`) {
+		t.Fatalf("Validate() error = %v, want KubeVirt CPU rejection", err)
 	}
 }

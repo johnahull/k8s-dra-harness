@@ -20,9 +20,42 @@ type Config struct {
 	Cleanup        *bool           `yaml:"cleanup"`
 	Existing       bool            `yaml:"existing"`
 	Preflight      bool            `yaml:"preflight"`
+	Workload       string          `yaml:"workload"`
+	KubeVirt       *KubeVirt       `yaml:"kubevirt"`
 	Drivers        []Driver        `yaml:"drivers"`
 	Operator       *AMDOperator    `yaml:"amdOperator"`
 	NVIDIAOperator *NVIDIAOperator `yaml:"nvidiaOperator"`
+}
+
+const (
+	WorkloadPod                  = "pod"
+	WorkloadKubeVirt             = "kubevirt"
+	KubeVirtAttachmentGPU        = "gpu"
+	KubeVirtAttachmentHostDevice = "hostDevice"
+)
+
+// KubeVirt selects the direct-VMI workload backend. The referenced image and
+// secrets must already be available to the target cluster; the harness never
+// creates cluster-wide KubeVirt configuration or guest credentials.
+type KubeVirt struct {
+	Namespace       string         `yaml:"namespace"`
+	Image           string         `yaml:"image"`
+	Attachment      string         `yaml:"attachment"`
+	DeviceName      string         `yaml:"deviceName"`
+	CloudInitSecret string         `yaml:"cloudInitSecret"`
+	Guest           *KubeVirtGuest `yaml:"guest"`
+}
+
+// KubeVirtGuest describes optional in-guest verification through virtctl ssh.
+// The private key is read from a Kubernetes Secret and is never written to the
+// run configuration or included in workload objects.
+type KubeVirtGuest struct {
+	Virtctl          string `yaml:"virtctl"`
+	Username         string `yaml:"username"`
+	PrivateKeySecret string `yaml:"privateKeySecret"`
+	PrivateKeyKey    string `yaml:"privateKeyKey"`
+	Command          string `yaml:"command"`
+	ExpectedOutput   string `yaml:"expectedOutput"`
 }
 
 // Driver selects an adapter and either a local checkout or a published image.
@@ -105,6 +138,59 @@ func (c *Config) Validate() error {
 	}
 	if len(c.Drivers) == 0 && c.Operator == nil && c.NVIDIAOperator == nil {
 		problems = append(problems, errors.New("at least one driver or operator is required"))
+	}
+	if c.Workload == "" {
+		c.Workload = WorkloadPod
+	}
+	if c.Workload != WorkloadPod && c.Workload != WorkloadKubeVirt {
+		problems = append(problems, fmt.Errorf("unsupported workload %q (use %q or %q)", c.Workload, WorkloadPod, WorkloadKubeVirt))
+	}
+	if c.Workload == WorkloadKubeVirt {
+		if c.KubeVirt == nil {
+			problems = append(problems, errors.New("kubevirt workload requires kubevirt configuration"))
+		} else {
+			if c.KubeVirt.Image == "" {
+				problems = append(problems, errors.New("kubevirt workload requires image"))
+			}
+			if c.KubeVirt.Attachment == "" {
+				c.KubeVirt.Attachment = KubeVirtAttachmentGPU
+			}
+			if c.KubeVirt.Attachment != KubeVirtAttachmentGPU && c.KubeVirt.Attachment != KubeVirtAttachmentHostDevice {
+				problems = append(problems, fmt.Errorf("kubevirt attachment %q must be gpu or hostDevice", c.KubeVirt.Attachment))
+			}
+			if c.KubeVirt.Namespace != "" && len(validation.IsDNS1123Label(c.KubeVirt.Namespace)) > 0 {
+				problems = append(problems, errors.New("kubevirt namespace must be a DNS label"))
+			}
+			if c.KubeVirt.Guest != nil {
+				guest := c.KubeVirt.Guest
+				if guest.Username == "" || guest.PrivateKeySecret == "" || guest.Command == "" {
+					problems = append(problems, errors.New("kubevirt guest requires username, privateKeySecret, and command"))
+				}
+				if guest.PrivateKeyKey == "" {
+					guest.PrivateKeyKey = "id_rsa"
+				}
+				if guest.ExpectedOutput == "" {
+					guest.ExpectedOutput = "PASS"
+				}
+			}
+			if c.KubeVirt.Namespace == "" && (c.KubeVirt.CloudInitSecret != "" || c.KubeVirt.Guest != nil) {
+				problems = append(problems, errors.New("kubevirt namespace is required when cloud-init or guest verification is configured"))
+			}
+			if len(c.Drivers) == 0 {
+				problems = append(problems, errors.New("kubevirt workload requires at least one driver"))
+			} else {
+				for _, d := range c.Drivers {
+					adapter, err := driver.Get(d.Name)
+					if err == nil {
+						if _, supported := driver.KubeVirtDeviceFor(adapter); !supported {
+							problems = append(problems, fmt.Errorf("kubevirt workload does not support driver %q", d.Name))
+						}
+					}
+				}
+			}
+		}
+	} else if c.KubeVirt != nil {
+		problems = append(problems, errors.New("kubevirt configuration requires workload: kubevirt"))
 	}
 	seen := map[string]bool{}
 	for _, d := range c.Drivers {

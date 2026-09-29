@@ -18,7 +18,10 @@ func init() { driver.Register(adapter{}) }
 func (adapter) Name() string        { return "nvidia" }
 func (adapter) DriverName() string  { return "gpu.nvidia.com" }
 func (adapter) DeviceClass() string { return "gpu.nvidia.com" }
-func (adapter) ChartDir() string    { return "deployments/helm/dra-driver-nvidia-gpu" }
+func (adapter) KubeVirtDevice() driver.KubeVirtDevice {
+	return driver.KubeVirtDevice{Name: "nvidia-gpu"}
+}
+func (adapter) ChartDir() string { return "deployments/helm/dra-driver-nvidia-gpu" }
 func (adapter) DeviceClasses(values map[string]any) []string {
 	names := []string{}
 	resources, _ := values["resources"].(map[string]any)

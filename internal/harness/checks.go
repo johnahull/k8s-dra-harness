@@ -9,7 +9,9 @@ import (
 
 	"github.com/johnahull/k8s-dra-harness/internal/amdoperator"
 	"github.com/johnahull/k8s-dra-harness/internal/driver"
+	"github.com/johnahull/k8s-dra-harness/internal/kubevirt"
 	"github.com/johnahull/k8s-dra-harness/internal/nvidiaoperator"
+	"github.com/johnahull/k8s-dra-harness/internal/runconfig"
 	corev1 "k8s.io/api/core/v1"
 	resourcev1 "k8s.io/api/resource/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -128,6 +130,9 @@ func (r *Runner) RunWorkload(ctx context.Context, d Installed) error {
 
 // SupportsJointWorkload reports whether the selected pair has a combined check.
 func (r *Runner) SupportsJointWorkload() bool {
+	if r.Config.Workload == runconfig.WorkloadKubeVirt {
+		return false
+	}
 	adapters := make([]driver.Adapter, 0, len(r.Drivers))
 	for _, selected := range r.Drivers {
 		adapters = append(adapters, selected.Adapter)
@@ -137,6 +142,9 @@ func (r *Runner) SupportsJointWorkload() bool {
 
 // RunJointWorkload allocates a registered driver pair to a single pod.
 func (r *Runner) RunJointWorkload(ctx context.Context) error {
+	if r.Config.Workload == runconfig.WorkloadKubeVirt {
+		return fmt.Errorf("KubeVirt workload does not support joint driver checks")
+	}
 	return r.runWorkload(ctx, r.Drivers)
 }
 
@@ -155,6 +163,13 @@ func (r *Runner) RunOperatorWorkload(ctx context.Context) error {
 func (r *Runner) runWorkload(ctx context.Context, selected []Installed) error {
 	if len(selected) == 0 || len(selected) > 2 {
 		return fmt.Errorf("workload requires one driver or the supported driver pair")
+	}
+	if r.Config.Workload == runconfig.WorkloadKubeVirt {
+		if len(selected) != 1 {
+			return fmt.Errorf("KubeVirt workload requires exactly one driver")
+		}
+		return kubevirt.New(r.Client).Run(ctx, r.WorkloadNamespace(), r.ID, r.Config.KubeVirt,
+			selected[0].Adapter, selected[0].Config.Name, selected[0].Adapter.DeviceClass())
 	}
 	container := selected[0].Adapter.Workload()
 	if len(selected) == 2 {

@@ -12,6 +12,7 @@ import (
 
 	"github.com/johnahull/k8s-dra-harness/internal/amdoperator"
 	"github.com/johnahull/k8s-dra-harness/internal/driver"
+	"github.com/johnahull/k8s-dra-harness/internal/kubevirt"
 	"github.com/johnahull/k8s-dra-harness/internal/nvidiaoperator"
 	"github.com/johnahull/k8s-dra-harness/internal/runconfig"
 	"github.com/johnahull/k8s-dra-harness/pkg/clients"
@@ -68,6 +69,24 @@ func (r *Runner) Preflight(ctx context.Context) error {
 	if len(r.Config.Drivers) > 0 {
 		if _, err := r.Client.Discovery.ServerResourcesForGroupVersion("resource.k8s.io/v1"); err != nil {
 			return fmt.Errorf("cluster must serve resource.k8s.io/v1: %w", err)
+		}
+	}
+	if r.Config.Workload == runconfig.WorkloadKubeVirt {
+		if err := kubevirt.New(r.Client).Preflight(ctx, r.Config.KubeVirt.Attachment); err != nil {
+			return fmt.Errorf("KubeVirt preflight: %w", err)
+		}
+		if r.Config.KubeVirt.Guest != nil {
+			if err := kubevirt.ValidateGuest(ctx, r.Client, r.WorkloadNamespace(), r.Config.KubeVirt.Guest); err != nil {
+				return fmt.Errorf("KubeVirt guest preflight: %w", err)
+			}
+		}
+		if r.Config.KubeVirt.CloudInitSecret != "" {
+			if _, err := r.Client.K8s.CoreV1().Secrets(r.WorkloadNamespace()).Get(ctx, r.Config.KubeVirt.CloudInitSecret, metav1.GetOptions{}); err != nil {
+				if apierrors.IsNotFound(err) {
+					return fmt.Errorf("KubeVirt cloud-init Secret %s/%s was not found", r.WorkloadNamespace(), r.Config.KubeVirt.CloudInitSecret)
+				}
+				return fmt.Errorf("reading KubeVirt cloud-init Secret %s/%s: %w", r.WorkloadNamespace(), r.Config.KubeVirt.CloudInitSecret, err)
+			}
 		}
 	}
 	groups, err := r.Client.Discovery.ServerGroups()
@@ -200,8 +219,14 @@ func (r *Runner) Start(ctx context.Context) error {
 	return nil
 }
 
-// WorkloadNamespace is unique to this invocation.
-func (r *Runner) WorkloadNamespace() string { return r.Config.Namespace + "-" + r.ID + "-workload" }
+// WorkloadNamespace is unique to this invocation unless a KubeVirt namespace
+// was explicitly selected. Claims and VMIs must live in the same namespace.
+func (r *Runner) WorkloadNamespace() string {
+	if r.Config.KubeVirt != nil && r.Config.KubeVirt.Namespace != "" {
+		return r.Config.KubeVirt.Namespace
+	}
+	return r.Config.Namespace + "-" + r.ID + "-workload"
+}
 
 func (r *Runner) namespace(configured string) string {
 	if configured != "" {

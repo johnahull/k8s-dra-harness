@@ -24,6 +24,16 @@ settings. AMD workloads need GPU nodes with a working amdgpu kernel driver.
 NVIDIA runs need the NVIDIA GPU Operator chart and a working NVIDIA
 driver/toolkit on the target nodes.
 
+KubeVirt runs additionally need an installed KubeVirt or OpenShift
+Virtualization deployment with Kubernetes DRA enabled and the matching
+`GPUsWithDRA` or `HostDevicesWithDRA` feature gate. The harness does not install
+or enable KubeVirt. Select `workload: kubevirt` to create direct VMIs; the
+default `workload: pod` path is unchanged. KubeVirt workloads currently
+support the AMD and NVIDIA adapters, while CPU remains pod-only. Use
+`kubevirt-nvidia.yaml` as a starting point. Its guest verification requires
+`virtctl`, a cloud-init Secret that installs the matching public key, and a
+private-key Secret containing the configured key.
+
 ## Run
 
 ```sh

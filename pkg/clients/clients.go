@@ -7,10 +7,12 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/discovery"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	kubevirtclient "kubevirt.io/client-go/kubevirt"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -20,9 +22,12 @@ import (
 type Settings struct {
 	client.Client
 
-	Config    *rest.Config
-	K8s       kubernetes.Interface
-	Discovery discovery.DiscoveryInterface
+	Config     *rest.Config
+	K8s        kubernetes.Interface
+	Dynamic    dynamic.Interface
+	Kubevirt   kubevirtclient.Interface
+	Discovery  discovery.DiscoveryInterface
+	Kubeconfig string
 }
 
 // NewScheme returns a core Kubernetes scheme. Adapters register their own APIs.
@@ -58,6 +63,14 @@ func New(kubeconfig string, adders ...func(*runtime.Scheme) error) (*Settings, e
 	if err != nil {
 		return nil, fmt.Errorf("creating clientset: %w", err)
 	}
+	dynamicClient, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("creating dynamic client: %w", err)
+	}
+	kubevirt, err := kubevirtclient.NewForConfig(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("creating KubeVirt client: %w", err)
+	}
 
 	scheme, err := NewScheme(adders...)
 	if err != nil {
@@ -69,5 +82,6 @@ func New(kubeconfig string, adders ...func(*runtime.Scheme) error) (*Settings, e
 		return nil, fmt.Errorf("creating controller-runtime client: %w", err)
 	}
 
-	return &Settings{Client: c, Config: cfg, K8s: k8s, Discovery: k8s.Discovery()}, nil
+	return &Settings{Client: c, Config: cfg, K8s: k8s, Dynamic: dynamicClient, Kubevirt: kubevirt,
+		Discovery: k8s.Discovery(), Kubeconfig: kubeconfig}, nil
 }

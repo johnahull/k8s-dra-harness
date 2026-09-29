@@ -1,0 +1,26 @@
+# KubeVirt example: run the NVIDIA DRA claim through a direct VMI.
+# The cloud-init Secret must install the SSH public key matching id_rsa and
+# execute the guest command's GPU check. The private key Secret is read only
+# by the harness for virtctl ssh verification.
+namespace: dra-harness
+registry: quay.io/my-account
+workload: kubevirt
+kubevirt:
+  # Pre-create this namespace and the referenced Secrets before the run.
+  namespace: dra-kubevirt
+  image: quay.io/containerdisks/fedora:latest
+  attachment: gpu
+  cloudInitSecret: dra-kubevirt-cloudinit
+  guest:
+    virtctl: virtctl
+    username: fedora
+    privateKeySecret: dra-kubevirt-ssh
+    privateKeyKey: id_rsa
+    command: "nvidia-smi -L && echo PASS"
+    expectedOutput: PASS
+nvidiaOperator:
+  chart: /home/jhull/devel/nvidia/gpu-operator/deployments/gpu-operator
+  namespace: nvidia-gpu-operator
+drivers:
+  - name: nvidia
+    sourcePath: /home/jhull/devel/nvidia/k8s-dra-driver-gpu

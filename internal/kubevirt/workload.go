@@ -1,0 +1,351 @@
+// Package kubevirt contains the optional direct-VMI workload backend.
+package kubevirt
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/johnahull/k8s-dra-harness/internal/driver"
+	"github.com/johnahull/k8s-dra-harness/internal/runconfig"
+	"github.com/johnahull/k8s-dra-harness/pkg/clients"
+	corev1 "k8s.io/api/core/v1"
+	resourcev1 "k8s.io/api/resource/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/wait"
+	virtv1 "kubevirt.io/api/core/v1"
+)
+
+const (
+	requestName   = "device"
+	checkTimeout  = 10 * time.Minute
+	launcherLabel = "kubevirt.io/domain"
+)
+
+// ErrUnsupported identifies a cluster that cannot run the selected KubeVirt
+// workload. Integration suites may skip such a compatibility target while
+// preserving configuration and workload failures as test failures.
+var ErrUnsupported = errors.New("KubeVirt DRA workload is unsupported")
+
+// Runner executes direct-VMI DRA workloads using the cluster clients owned by
+// the harness. It never installs or changes KubeVirt configuration.
+type Runner struct {
+	clients *clients.Settings
+}
+
+// New creates a KubeVirt workload runner.
+func New(settings *clients.Settings) *Runner { return &Runner{clients: settings} }
+
+// Preflight verifies the APIs and KubeVirt feature gate needed by the
+// selected attachment. Feature gates are observed from the installed KubeVirt
+// custom resource; the harness never enables them.
+func (r *Runner) Preflight(ctx context.Context, attachment string) error {
+	resources, err := r.clients.Discovery.ServerResourcesForGroupVersion("kubevirt.io/v1")
+	if err != nil {
+		return fmt.Errorf("%w: cluster must serve kubevirt.io/v1: %v", ErrUnsupported, err)
+	}
+	foundVMI := false
+	for _, resource := range resources.APIResources {
+		if resource.Name == "virtualmachineinstances" && resource.Namespaced {
+			foundVMI = true
+			break
+		}
+	}
+	if !foundVMI {
+		return fmt.Errorf("%w: kubevirt.io/v1 does not expose namespaced virtualmachineinstances", ErrUnsupported)
+	}
+
+	gate := "GPUsWithDRA"
+	if attachment == runconfig.KubeVirtAttachmentHostDevice {
+		gate = "HostDevicesWithDRA"
+	}
+	list, err := r.clients.Dynamic.Resource(schema.GroupVersionResource{
+		Group: "kubevirt.io", Version: "v1", Resource: "kubevirts",
+	}).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return fmt.Errorf("%w: discovering KubeVirt configuration: %v", ErrUnsupported, err)
+	}
+	if len(list.Items) == 0 {
+		return fmt.Errorf("%w: no KubeVirt custom resource found", ErrUnsupported)
+	}
+	for _, item := range list.Items {
+		gates, found, err := nestedStringSlice(item.Object, "spec", "configuration", "developerConfiguration", "featureGates")
+		if err != nil {
+			return fmt.Errorf("%w: reading feature gates from KubeVirt %s/%s: %v", ErrUnsupported, item.GetNamespace(), item.GetName(), err)
+		}
+		if found && contains(gates, gate) {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: KubeVirt is installed but feature gate %q is not enabled", ErrUnsupported, gate)
+}
+
+// Run creates one direct VMI and one user-owned ResourceClaim, then verifies
+// allocation, virt-launcher propagation, VMI startup, and optional guest use.
+func (r *Runner) Run(ctx context.Context, namespace, id string, config *runconfig.KubeVirt, selected driver.Adapter, driverName, deviceClass string) error {
+	device, ok := driver.KubeVirtDeviceFor(selected)
+	if !ok {
+		return fmt.Errorf("driver %q has no KubeVirt device mapping", driverName)
+	}
+	attachment := config.Attachment
+	if attachment == "" {
+		attachment = device.Attachment
+	}
+	if attachment != runconfig.KubeVirtAttachmentGPU && attachment != runconfig.KubeVirtAttachmentHostDevice {
+		return fmt.Errorf("unsupported KubeVirt attachment %q", attachment)
+	}
+	guestDeviceName := config.DeviceName
+	if guestDeviceName == "" {
+		guestDeviceName = device.Name
+	}
+	if guestDeviceName == "" {
+		guestDeviceName = driverName + "-device"
+	}
+
+	claimName := fmt.Sprintf("dra-vmi-%s-%s-claim", id, driverName)
+	vmiName := fmt.Sprintf("dra-vmi-%s-%s", id, driverName)
+	labels := map[string]string{
+		"app.kubernetes.io/managed-by": "k8s-dra-harness",
+		"app.kubernetes.io/component":  "kubevirt-workload",
+		"dra-harness.io/run":           id,
+	}
+	claim := &resourcev1.ResourceClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: claimName, Namespace: namespace, Labels: labels},
+		Spec: resourcev1.ResourceClaimSpec{Devices: resourcev1.DeviceClaim{Requests: []resourcev1.DeviceRequest{{
+			Name:    requestName,
+			Exactly: &resourcev1.ExactDeviceRequest{DeviceClassName: deviceClass},
+		}}}},
+	}
+	if _, err := r.clients.K8s.ResourceV1().ResourceClaims(namespace).Create(ctx, claim, metav1.CreateOptions{}); err != nil {
+		return fmt.Errorf("creating KubeVirt %s claim: %w", driverName, err)
+	}
+	createdVMI := false
+	cleanup := func() error {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		var problems []error
+		claimSafeToDelete := !createdVMI
+		if createdVMI {
+			if err := r.clients.Kubevirt.KubevirtV1().VirtualMachineInstances(namespace).Delete(cleanupCtx, vmiName, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+				problems = append(problems, fmt.Errorf("deleting VMI %s: %w", vmiName, err))
+			}
+			launcherGone := r.waitForLauncherGone(cleanupCtx, namespace, vmiName)
+			if launcherGone != nil {
+				problems = append(problems, launcherGone)
+			}
+			vmiGone := waitForNotFound(cleanupCtx, func(ctx context.Context) error {
+				_, err := r.clients.Kubevirt.KubevirtV1().VirtualMachineInstances(namespace).Get(ctx, vmiName, metav1.GetOptions{})
+				return err
+			})
+			if vmiGone != nil {
+				problems = append(problems, fmt.Errorf("waiting for VMI %s deletion: %w", vmiName, vmiGone))
+			}
+			claimSafeToDelete = launcherGone == nil && vmiGone == nil
+		}
+		if !claimSafeToDelete {
+			problems = append(problems, fmt.Errorf("retaining ResourceClaim %s because the VMI cleanup was not confirmed", claimName))
+			return errors.Join(problems...)
+		}
+		if err := r.clients.K8s.ResourceV1().ResourceClaims(namespace).Delete(cleanupCtx, claimName, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+			problems = append(problems, fmt.Errorf("deleting ResourceClaim %s: %w", claimName, err))
+		}
+		if err := waitForNotFound(cleanupCtx, func(ctx context.Context) error {
+			_, err := r.clients.K8s.ResourceV1().ResourceClaims(namespace).Get(ctx, claimName, metav1.GetOptions{})
+			return err
+		}); err != nil {
+			problems = append(problems, fmt.Errorf("waiting for ResourceClaim %s deletion: %w", claimName, err))
+		}
+		return errors.Join(problems...)
+	}
+
+	vmi := BuildVMI(vmiName, namespace, config, attachment, guestDeviceName, driverName, claimName, labels)
+	if _, err := r.clients.Kubevirt.KubevirtV1().VirtualMachineInstances(namespace).Create(ctx, vmi, metav1.CreateOptions{}); err != nil {
+		return errors.Join(fmt.Errorf("creating KubeVirt VMI: %w", err), cleanup())
+	}
+	createdVMI = true
+	if err := r.waitReady(ctx, namespace, vmiName, claimName); err != nil {
+		return errors.Join(err, cleanup())
+	}
+	if config.Guest != nil {
+		if err := verifyGuest(ctx, r.clients, namespace, vmiName, config.Guest); err != nil {
+			return errors.Join(err, cleanup())
+		}
+	}
+	return cleanup()
+}
+
+// BuildVMI returns a direct-VMI object with the DRA claim wired into the
+// selected KubeVirt GPU or HostDevice field.
+func BuildVMI(name, namespace string, config *runconfig.KubeVirt, attachment, deviceName, claimEntry, claimName string, labels map[string]string) *virtv1.VirtualMachineInstance {
+	claimRef := &virtv1.ClaimRequest{ClaimName: claimEntry, RequestName: requestName}
+	devices := virtv1.Devices{
+		Disks: []virtv1.Disk{{Name: "rootdisk", DiskDevice: virtv1.DiskDevice{Disk: &virtv1.DiskTarget{Bus: virtv1.DiskBusVirtio}}}},
+	}
+	if attachment == runconfig.KubeVirtAttachmentHostDevice {
+		devices.HostDevices = []virtv1.HostDevice{{Name: deviceName, ClaimRequest: claimRef}}
+	} else {
+		devices.GPUs = []virtv1.GPU{{Name: deviceName, ClaimRequest: claimRef}}
+	}
+	volumes := []virtv1.Volume{{Name: "rootdisk", VolumeSource: virtv1.VolumeSource{ContainerDisk: &virtv1.ContainerDiskSource{Image: config.Image}}}}
+	if config.CloudInitSecret != "" {
+		volumes = append(volumes, virtv1.Volume{Name: "cloudinit", VolumeSource: virtv1.VolumeSource{CloudInitNoCloud: &virtv1.CloudInitNoCloudSource{
+			UserDataSecretRef: &corev1.LocalObjectReference{Name: config.CloudInitSecret},
+		}}})
+		readOnly := true
+		devices.Disks = append(devices.Disks, virtv1.Disk{Name: "cloudinit", DiskDevice: virtv1.DiskDevice{CDRom: &virtv1.CDRomTarget{Bus: virtv1.DiskBusVirtio, ReadOnly: &readOnly}}})
+	}
+	return &virtv1.VirtualMachineInstance{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "kubevirt.io/v1", Kind: "VirtualMachineInstance"},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, Labels: labels},
+		Spec: virtv1.VirtualMachineInstanceSpec{
+			Domain: virtv1.DomainSpec{
+				Resources: virtv1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceMemory: resourceQuantity("1Gi")}},
+				Devices:   devices,
+			},
+			Volumes:        volumes,
+			ResourceClaims: []virtv1.VirtualMachineInstanceResourceClaim{{Name: claimEntry, ResourceClaimName: stringPtr(claimName)}},
+		},
+	}
+}
+
+func (r *Runner) waitReady(ctx context.Context, namespace, vmiName, claimName string) error {
+	var last string
+	err := wait.PollUntilContextTimeout(ctx, 5*time.Second, checkTimeout, true, func(ctx context.Context) (bool, error) {
+		claim, err := r.clients.K8s.ResourceV1().ResourceClaims(namespace).Get(ctx, claimName, metav1.GetOptions{})
+		if err != nil {
+			return false, err
+		}
+		if claim.Status.Allocation == nil {
+			last = "ResourceClaim is not allocated"
+			return false, nil
+		}
+		vmi, err := r.clients.Kubevirt.KubevirtV1().VirtualMachineInstances(namespace).Get(ctx, vmiName, metav1.GetOptions{})
+		if err != nil {
+			return false, err
+		}
+		last = fmt.Sprintf("VMI phase=%s reason=%s", vmi.Status.Phase, vmi.Status.Reason)
+		if vmi.Status.Phase == virtv1.Failed {
+			return false, errors.New(last)
+		}
+		pods, err := r.clients.K8s.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: launcherLabel + "=" + vmiName})
+		if err != nil {
+			return false, err
+		}
+		for _, pod := range pods.Items {
+			if !podCarriesClaim(&pod, claimName) {
+				continue
+			}
+			if !claimReservedForPod(claim, &pod) {
+				last += "; virt-launcher claim is not reserved for the pod"
+				continue
+			}
+			if vmi.Status.Phase == virtv1.Running {
+				return true, nil
+			}
+			last += "; virt-launcher claim propagated"
+		}
+		return false, nil
+	})
+	if err != nil {
+		return fmt.Errorf("waiting for KubeVirt workload (%s): %w", last, err)
+	}
+	return nil
+}
+
+func (r *Runner) waitForLauncherGone(ctx context.Context, namespace, vmiName string) error {
+	err := wait.PollUntilContextTimeout(ctx, 2*time.Second, 2*time.Minute, true, func(ctx context.Context) (bool, error) {
+		pods, err := r.clients.K8s.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: launcherLabel + "=" + vmiName})
+		if err != nil {
+			return false, err
+		}
+		return len(pods.Items) == 0, nil
+	})
+	if err != nil {
+		return fmt.Errorf("waiting for virt-launcher pod for VMI %s deletion: %w", vmiName, err)
+	}
+	return nil
+}
+
+func podCarriesClaim(pod *corev1.Pod, claimName string) bool {
+	for _, claim := range pod.Spec.ResourceClaims {
+		if claim.ResourceClaimName != nil && *claim.ResourceClaimName == claimName {
+			return true
+		}
+	}
+	return false
+}
+
+func claimReservedForPod(claim *resourcev1.ResourceClaim, pod *corev1.Pod) bool {
+	for _, consumer := range claim.Status.ReservedFor {
+		if consumer.Resource == "pods" && consumer.Name == pod.Name && consumer.UID == pod.UID {
+			return true
+		}
+	}
+	return false
+}
+
+func waitForNotFound(ctx context.Context, get func(context.Context) error) error {
+	return wait.PollUntilContextTimeout(ctx, 2*time.Second, 2*time.Minute, true, func(ctx context.Context) (bool, error) {
+		err := get(ctx)
+		if apierrors.IsNotFound(err) {
+			return true, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		return false, nil
+	})
+}
+
+func nestedStringSlice(obj map[string]any, fields ...string) ([]string, bool, error) {
+	value, found, err := unstructuredNestedFieldNoCopy(obj, fields...)
+	if err != nil || !found {
+		return nil, found, err
+	}
+	values, ok := value.([]any)
+	if !ok {
+		return nil, true, fmt.Errorf("expected string list, got %T", value)
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		stringValue, ok := value.(string)
+		if !ok {
+			return nil, true, fmt.Errorf("expected string feature gate, got %T", value)
+		}
+		out = append(out, stringValue)
+	}
+	return out, true, nil
+}
+
+func unstructuredNestedFieldNoCopy(obj map[string]any, fields ...string) (any, bool, error) {
+	var current any = obj
+	for _, field := range fields {
+		mapping, ok := current.(map[string]any)
+		if !ok {
+			return nil, false, nil
+		}
+		value, ok := mapping[field]
+		if !ok {
+			return nil, false, nil
+		}
+		current = value
+	}
+	return current, true, nil
+}
+
+func contains(values []string, expected string) bool {
+	for _, value := range values {
+		if value == expected {
+			return true
+		}
+	}
+	return false
+}
+
+func stringPtr(value string) *string { return &value }
+
+func resourceQuantity(value string) resource.Quantity { return resource.MustParse(value) }

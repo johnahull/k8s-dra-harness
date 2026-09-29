@@ -13,6 +13,12 @@ An adapter owns only driver-specific behavior:
 - `Values` merges the image and driver-specific Helm values.
 - `Workload` returns a container that proves a claimed device reached the pod.
 
+GPU adapters that can be exercised inside a KubeVirt guest may additionally
+implement `KubeVirtDevice() driver.KubeVirtDevice`. Set the optional device
+name used as the guest GPU/HostDevice alias. The run configuration selects the
+`gpu` or `hostDevice` attachment. Adapters without this method remain
+pod-only.
+
 The generic harness owns cluster clients, Helm releases, namespaces, DRA
 claims, readiness checks, and cleanup. An adapter should not create Kubernetes
 objects directly from `Build`, `Values`, or `Workload`.
@@ -47,3 +53,16 @@ To add another built-in adapter:
    prerequisites.
 5. Register a joint policy only when a combined workload has meaningful
    semantics for the driver pair.
+
+## KubeVirt workloads
+
+Set `workload: kubevirt` and provide a `kubevirt` block with a container-disk
+image. The harness creates a direct `VirtualMachineInstance`, a
+`ResourceClaim`, and matching KubeVirt DRA device references in one namespace.
+It observes the installed KubeVirt feature gate and deletes the VMI before
+deleting the claim. It does not modify KubeVirt configuration.
+
+Guest verification is optional. When configured, `cloudInitSecret` provides
+the guest bootstrap data and `guest.privateKeySecret` supplies the private key
+used by `virtctl ssh`; the private key is copied only to a protected temporary
+file for the duration of the check.

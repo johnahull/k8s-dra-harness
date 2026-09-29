@@ -10,6 +10,7 @@ import (
 
 	_ "github.com/johnahull/k8s-dra-harness/internal/adapters/defaults"
 	"github.com/johnahull/k8s-dra-harness/internal/harness"
+	"github.com/johnahull/k8s-dra-harness/internal/kubevirt"
 	"github.com/johnahull/k8s-dra-harness/internal/runconfig"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -32,6 +33,10 @@ var _ = Describe("selected drivers", Ordered, func() {
 			err = runner.Start(ctx)
 		}
 		if err != nil {
+			if cfg.Workload == runconfig.WorkloadKubeVirt && errors.Is(err, kubevirt.ErrUnsupported) {
+				runner = nil
+				Skip(err.Error())
+			}
 			if cfg.Existing || cfg.Preflight {
 				runner = nil
 				Expect(err).NotTo(HaveOccurred())

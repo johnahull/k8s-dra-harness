@@ -24,6 +24,29 @@ type Adapter interface {
 	Workload() corev1.Container
 }
 
+// KubeVirtDevice describes how an adapter's DRA claim is attached to a
+// KubeVirt VMI. It is intentionally optional: adapters without a guest-device
+// representation continue to support the pod workload only.
+type KubeVirtDevice struct {
+	Attachment string
+	Name       string
+}
+
+// KubeVirtAdapter is implemented by adapters that can be tested through
+// KubeVirt's GPU or HostDevice DRA fields.
+type KubeVirtAdapter interface {
+	KubeVirtDevice() KubeVirtDevice
+}
+
+// KubeVirtDeviceFor returns adapter-specific metadata, if available.
+func KubeVirtDeviceFor(adapter Adapter) (KubeVirtDevice, bool) {
+	kubevirtAdapter, ok := adapter.(KubeVirtAdapter)
+	if !ok {
+		return KubeVirtDevice{}, false
+	}
+	return kubevirtAdapter.KubeVirtDevice(), true
+}
+
 // DeviceClassLister is an optional extension for charts that create more than
 // one DeviceClass. The primary Adapter.DeviceClass remains the class used by
 // generic allocation checks.

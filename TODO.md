@@ -67,3 +67,16 @@ smoke suite has not yet been run against a live cluster.
 - [ ] Reconcile the older AMD-only `internal/config`, `internal/inittools`,
       `internal/platform`, and `pkg/amdgpu` foundation packages with the active
       harness path. Retire unused paths only after their intended use is clear.
+
+## 6. KubeVirt and OpenShift Virtualization
+
+- [x] Add a direct-VMI KubeVirt workload backend targeting the upstream DRA
+      API shape used by KubeVirt main.
+- [x] Add KubeVirt API/feature-gate discovery without installing or modifying
+      KubeVirt or OpenShift Virtualization.
+- [x] Add optional Secret-backed guest verification through `virtctl ssh`.
+- [ ] Run the KubeVirt workload on an upstream main cluster with AMD and
+      NVIDIA hardware, then repeat on a compatible OpenShift Virtualization
+      cluster.
+- [ ] Add guest image/cloud-init fixtures and capture VMI, virt-launcher, and
+      ResourceClaim artifacts for failed runs.
