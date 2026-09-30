@@ -3,8 +3,11 @@ package kubevirt
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/johnahull/k8s-dra-harness/internal/driver"
@@ -15,6 +18,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/wait"
 	virtv1 "kubevirt.io/api/core/v1"
@@ -23,7 +27,7 @@ import (
 const (
 	requestName   = "device"
 	checkTimeout  = 10 * time.Minute
-	launcherLabel = "kubevirt.io/domain"
+	launcherLabel = "vmi.kubevirt.io/id"
 )
 
 // ErrUnsupported identifies a cluster that cannot run the selected KubeVirt
@@ -80,6 +84,23 @@ func (r *Runner) Preflight(ctx context.Context, attachment string) error {
 		if found && contains(gates, gate) {
 			return nil
 		}
+		disabled, found, err := nestedStringSlice(item.Object, "spec", "configuration", "developerConfiguration", "disabledFeatureGates")
+		if err != nil {
+			return fmt.Errorf("%w: reading disabled feature gates from KubeVirt %s/%s: %v", ErrUnsupported, item.GetNamespace(), item.GetName(), err)
+		}
+		if found && contains(disabled, gate) {
+			return fmt.Errorf("%w: KubeVirt feature gate %q is explicitly disabled", ErrUnsupported, gate)
+		}
+		version, found, err := nestedString(item.Object, "status", "observedKubeVirtVersion")
+		if err != nil {
+			return fmt.Errorf("%w: reading KubeVirt version from %s/%s: %v", ErrUnsupported, item.GetNamespace(), item.GetName(), err)
+		}
+		if found && kubeVirtVersionAtLeast(version, 1, 9) {
+			// GPUsWithDRA and HostDevicesWithDRA are enabled by default in
+			// KubeVirt v1.9 and later. An empty featureGates list therefore
+			// does not mean that DRA is unavailable.
+			return nil
+		}
 	}
 	return fmt.Errorf("%w: KubeVirt is installed but feature gate %q is not enabled", ErrUnsupported, gate)
 }
@@ -113,12 +134,9 @@ func (r *Runner) Run(ctx context.Context, namespace, id string, config *runconfi
 		"app.kubernetes.io/component":  "kubevirt-workload",
 		"dra-harness.io/run":           id,
 	}
-	claim := &resourcev1.ResourceClaim{
-		ObjectMeta: metav1.ObjectMeta{Name: claimName, Namespace: namespace, Labels: labels},
-		Spec: resourcev1.ResourceClaimSpec{Devices: resourcev1.DeviceClaim{Requests: []resourcev1.DeviceRequest{{
-			Name:    requestName,
-			Exactly: &resourcev1.ExactDeviceRequest{DeviceClassName: deviceClass},
-		}}}},
+	claim, err := BuildClaim(claimName, namespace, config, driverName, deviceClass, labels)
+	if err != nil {
+		return err
 	}
 	if _, err := r.clients.K8s.ResourceV1().ResourceClaims(namespace).Create(ctx, claim, metav1.CreateOptions{}); err != nil {
 		return fmt.Errorf("creating KubeVirt %s claim: %w", driverName, err)
@@ -175,7 +193,50 @@ func (r *Runner) Run(ctx context.Context, namespace, id string, config *runconfi
 			return errors.Join(err, cleanup())
 		}
 	}
+	if config.HoldAfterReadySeconds > 0 {
+		timer := time.NewTimer(time.Duration(config.HoldAfterReadySeconds) * time.Second)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return errors.Join(ctx.Err(), cleanup())
+		}
+	}
 	return cleanup()
+}
+
+// BuildClaim returns the ResourceClaim consumed by a KubeVirt VMI. The
+// selector and opaque configuration are optional so the same backend can test
+// ordinary GPU claims and driver-specific VFIO claims.
+func BuildClaim(name, namespace string, config *runconfig.KubeVirt, driverName, deviceClass string, labels map[string]string) (*resourcev1.ResourceClaim, error) {
+	exact := &resourcev1.ExactDeviceRequest{DeviceClassName: deviceClass}
+	if config.Selector != "" {
+		exact.Selectors = []resourcev1.DeviceSelector{{CEL: &resourcev1.CELDeviceSelector{Expression: config.Selector}}}
+	}
+	claim := &resourcev1.ResourceClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, Labels: labels},
+		Spec: resourcev1.ResourceClaimSpec{Devices: resourcev1.DeviceClaim{Requests: []resourcev1.DeviceRequest{{
+			Name:    requestName,
+			Exactly: exact,
+		}}}},
+	}
+	if config.ClaimConfig == nil {
+		return claim, nil
+	}
+	parameters, err := json.Marshal(config.ClaimConfig.Parameters)
+	if err != nil {
+		return nil, fmt.Errorf("encoding KubeVirt claim parameters: %w", err)
+	}
+	claim.Spec.Devices.Config = []resourcev1.DeviceClaimConfiguration{{
+		Requests: config.ClaimConfig.Requests,
+		DeviceConfiguration: resourcev1.DeviceConfiguration{Opaque: &resourcev1.OpaqueDeviceConfiguration{
+			Driver:     config.ClaimConfig.Driver,
+			Parameters: runtime.RawExtension{Raw: parameters},
+		}},
+	}}
+	return claim, nil
 }
 
 // BuildVMI returns a direct-VMI object with the DRA claim wired into the
@@ -235,18 +296,19 @@ func (r *Runner) waitReady(ctx context.Context, namespace, vmiName, claimName st
 		if err != nil {
 			return false, err
 		}
+		reserved := false
 		for _, pod := range pods.Items {
-			if !podCarriesClaim(&pod, claimName) {
-				continue
-			}
 			if !claimReservedForPod(claim, &pod) {
-				last += "; virt-launcher claim is not reserved for the pod"
 				continue
 			}
+			reserved = true
 			if vmi.Status.Phase == virtv1.Running {
 				return true, nil
 			}
-			last += "; virt-launcher claim propagated"
+			last += "; virt-launcher claim reserved"
+		}
+		if !reserved {
+			last += "; virt-launcher claim is not reserved for the pod"
 		}
 		return false, nil
 	})
@@ -319,6 +381,35 @@ func nestedStringSlice(obj map[string]any, fields ...string) ([]string, bool, er
 		out = append(out, stringValue)
 	}
 	return out, true, nil
+}
+
+func nestedString(obj map[string]any, fields ...string) (string, bool, error) {
+	value, found, err := unstructuredNestedFieldNoCopy(obj, fields...)
+	if err != nil || !found {
+		return "", found, err
+	}
+	stringValue, ok := value.(string)
+	if !ok {
+		return "", true, fmt.Errorf("expected string, got %T", value)
+	}
+	return stringValue, true, nil
+}
+
+func kubeVirtVersionAtLeast(version string, wantMajor, wantMinor int) bool {
+	version = strings.TrimPrefix(version, "v")
+	parts := strings.SplitN(version, ".", 3)
+	if len(parts) < 2 {
+		return false
+	}
+	major, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return false
+	}
+	minor, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return false
+	}
+	return major > wantMajor || (major == wantMajor && minor >= wantMinor)
 }
 
 func unstructuredNestedFieldNoCopy(obj map[string]any, fields ...string) (any, bool, error) {

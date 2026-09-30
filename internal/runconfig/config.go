@@ -39,13 +39,30 @@ const (
 // secrets must already be available to the target cluster; the harness never
 // creates cluster-wide KubeVirt configuration or guest credentials.
 type KubeVirt struct {
-	Namespace       string         `yaml:"namespace"`
-	Image           string         `yaml:"image"`
-	Attachment      string         `yaml:"attachment"`
-	DeviceName      string         `yaml:"deviceName"`
-	CloudInitSecret string         `yaml:"cloudInitSecret"`
-	Guest           *KubeVirtGuest `yaml:"guest"`
+	Namespace     string         `yaml:"namespace"`
+	Image         string         `yaml:"image"`
+	Attachment    string         `yaml:"attachment"`
+	DeviceName    string         `yaml:"deviceName"`
+	Selector      string         `yaml:"selector"`
+	ClaimConfig   *KubeVirtClaim `yaml:"claimConfig"`
+	AllowExisting bool           `yaml:"allowExisting"`
+	// HoldAfterReadySeconds keeps a live VMI and claim present after readiness.
+	// It is intended for lifecycle tests that mutate the driver while the VMI
+	// is using an allocated device.
+	HoldAfterReadySeconds int            `yaml:"holdAfterReadySeconds"`
+	CloudInitSecret       string         `yaml:"cloudInitSecret"`
+	Guest                 *KubeVirtGuest `yaml:"guest"`
 }
+
+// ClaimConfig configures opaque driver parameters for a ResourceClaim.
+type ClaimConfig struct {
+	Requests   []string       `yaml:"requests"`
+	Driver     string         `yaml:"driver"`
+	Parameters map[string]any `yaml:"parameters"`
+}
+
+// KubeVirtClaim is retained as a descriptive alias for KubeVirt configurations.
+type KubeVirtClaim = ClaimConfig
 
 // KubeVirtGuest describes optional in-guest verification through virtctl ssh.
 // The private key is read from a Kubernetes Secret and is never written to the
@@ -69,6 +86,17 @@ type Driver struct {
 	PodSelector   string         `yaml:"podSelector"`
 	Values        map[string]any `yaml:"values"`
 	UpstreamTests []string       `yaml:"upstreamTests"`
+	ClaimConfig   *ClaimConfig   `yaml:"claimConfig"`
+	SriovPolicy   *SriovPolicy   `yaml:"sriovPolicy"`
+}
+
+// SriovPolicy describes the raw spec of the SR-IOV driver's
+// SriovResourcePolicy. The harness creates this namespaced resource after the
+// driver chart is installed and removes it during cleanup.
+type SriovPolicy struct {
+	Name      string         `yaml:"name"`
+	Namespace string         `yaml:"namespace"`
+	Spec      map[string]any `yaml:"spec"`
 }
 
 // TestPlan selects live, namespace-scoped DRA scenarios to run after driver
@@ -79,6 +107,8 @@ type TestPlan struct {
 	Profile       string               `yaml:"profile"`
 	Scenarios     []string             `yaml:"scenarios"`
 	WorkloadImage string               `yaml:"workloadImage"`
+	Selector      string               `yaml:"selector"`
+	ClaimConfig   *ClaimConfig         `yaml:"claimConfig"`
 	Lifecycle     TestPlanLifecycle    `yaml:"lifecycle"`
 	Verification  TestPlanVerification `yaml:"verification"`
 	Topology      []TopologyCase       `yaml:"topology"`
@@ -205,8 +235,17 @@ func (c *Config) Validate() error {
 		if c.KubeVirt == nil {
 			problems = append(problems, errors.New("kubevirt workload requires kubevirt configuration"))
 		} else {
+			if c.KubeVirt.HoldAfterReadySeconds < 0 {
+				problems = append(problems, errors.New("kubevirt holdAfterReadySeconds must not be negative"))
+			}
 			if c.KubeVirt.Image == "" {
 				problems = append(problems, errors.New("kubevirt workload requires image"))
+			}
+			if c.KubeVirt.AllowExisting && !c.Existing {
+				problems = append(problems, errors.New("kubevirt allowExisting requires existing: true"))
+			}
+			if c.Existing && c.Workload == WorkloadKubeVirt && !c.KubeVirt.AllowExisting {
+				problems = append(problems, errors.New("existing kubevirt workload requires kubevirt.allowExisting: true"))
 			}
 			if c.KubeVirt.Attachment == "" {
 				c.KubeVirt.Attachment = KubeVirtAttachmentGPU
@@ -216,6 +255,22 @@ func (c *Config) Validate() error {
 			}
 			if c.KubeVirt.Namespace != "" && len(validation.IsDNS1123Label(c.KubeVirt.Namespace)) > 0 {
 				problems = append(problems, errors.New("kubevirt namespace must be a DNS label"))
+			}
+			if c.KubeVirt.ClaimConfig != nil {
+				claim := c.KubeVirt.ClaimConfig
+				if claim.Driver == "" {
+					problems = append(problems, errors.New("kubevirt claimConfig requires driver"))
+				} else if len(validation.IsDNS1123Subdomain(claim.Driver)) > 0 {
+					problems = append(problems, errors.New("kubevirt claimConfig driver must be a DNS subdomain"))
+				}
+				if len(claim.Parameters) == 0 {
+					problems = append(problems, errors.New("kubevirt claimConfig requires parameters"))
+				}
+				for i, request := range claim.Requests {
+					if request == "" || len(validation.IsDNS1123Label(request)) > 0 {
+						problems = append(problems, fmt.Errorf("kubevirt claimConfig request[%d] must be a DNS label", i))
+					}
+				}
 			}
 			if c.KubeVirt.Guest != nil {
 				guest := c.KubeVirt.Guest
@@ -263,6 +318,22 @@ func (c *Config) Validate() error {
 		}
 		if len(c.TestPlan.Scenarios) == 0 {
 			problems = append(problems, errors.New("testPlan requires at least one scenario"))
+		}
+		if c.TestPlan.ClaimConfig != nil {
+			claim := c.TestPlan.ClaimConfig
+			if claim.Driver == "" {
+				problems = append(problems, errors.New("testPlan claimConfig requires driver"))
+			} else if len(validation.IsDNS1123Subdomain(claim.Driver)) > 0 {
+				problems = append(problems, errors.New("testPlan claimConfig driver must be a DNS subdomain"))
+			}
+			if len(claim.Parameters) == 0 {
+				problems = append(problems, errors.New("testPlan claimConfig requires parameters"))
+			}
+			for i, request := range claim.Requests {
+				if request == "" || len(validation.IsDNS1123Label(request)) > 0 {
+					problems = append(problems, fmt.Errorf("testPlan claimConfig request[%d] must be a DNS label", i))
+				}
+			}
 		}
 		validScenarios := map[string]bool{
 			"resource-slices": true, "counters": true, "sibling-exclusion": true,
@@ -378,6 +449,42 @@ func (c *Config) Validate() error {
 		}
 		if d.Namespace != "" && len(validation.IsDNS1123Label(d.Namespace)) > 0 {
 			problems = append(problems, fmt.Errorf("driver %q namespace must be a DNS label", d.Name))
+		}
+		if d.ClaimConfig != nil {
+			claim := d.ClaimConfig
+			if claim.Driver == "" {
+				problems = append(problems, fmt.Errorf("driver %q claimConfig requires driver", d.Name))
+			} else if len(validation.IsDNS1123Subdomain(claim.Driver)) > 0 {
+				problems = append(problems, fmt.Errorf("driver %q claimConfig driver must be a DNS subdomain", d.Name))
+			}
+			if len(claim.Parameters) == 0 {
+				problems = append(problems, fmt.Errorf("driver %q claimConfig requires parameters", d.Name))
+			}
+			for i, request := range claim.Requests {
+				if request == "" || len(validation.IsDNS1123Label(request)) > 0 {
+					problems = append(problems, fmt.Errorf("driver %q claimConfig request[%d] must be a DNS label", d.Name, i))
+				}
+			}
+		}
+		if d.SriovPolicy != nil {
+			if d.Name != "sriov" {
+				problems = append(problems, fmt.Errorf("driver %q cannot configure sriovPolicy", d.Name))
+			}
+			if c.Existing {
+				problems = append(problems, errors.New("existing mode cannot create sriovPolicy"))
+			}
+			if d.SriovPolicy.Name != "" && len(validation.IsDNS1123Subdomain(d.SriovPolicy.Name)) > 0 {
+				problems = append(problems, errors.New("sriovPolicy name must be a DNS subdomain"))
+			}
+			if d.SriovPolicy.Namespace != "" && len(validation.IsDNS1123Label(d.SriovPolicy.Namespace)) > 0 {
+				problems = append(problems, errors.New("sriovPolicy namespace must be a DNS label"))
+			}
+			if d.Namespace != "" && d.SriovPolicy.Namespace != "" && d.Namespace != d.SriovPolicy.Namespace {
+				problems = append(problems, errors.New("sriovPolicy namespace must match driver namespace"))
+			}
+			if len(d.SriovPolicy.Spec) == 0 {
+				problems = append(problems, errors.New("sriovPolicy requires spec"))
+			}
 		}
 		if len(d.UpstreamTests) > 0 && (c.Existing || d.SourcePath == "") {
 			problems = append(problems, fmt.Errorf("driver %q upstreamTests requires sourcePath", d.Name))

@@ -93,7 +93,9 @@ var _ = Describe("selected drivers", Ordered, func() {
 	})
 
 	It("runs a live workload for each driver", func(ctx SpecContext) {
-		if runner.Config.Existing || runner.Config.Preflight {
+		existingKubeVirt := runner.Config.Existing && runner.Config.Workload == runconfig.WorkloadKubeVirt &&
+			runner.Config.KubeVirt != nil && runner.Config.KubeVirt.AllowExisting
+		if (runner.Config.Existing && !existingKubeVirt) || runner.Config.Preflight {
 			Skip("non-installation mode is read-only")
 		}
 		for _, d := range runner.Drivers {

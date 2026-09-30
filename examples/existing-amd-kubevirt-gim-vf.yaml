@@ -1,0 +1,21 @@
+# Run the KubeVirt GIM-VF lifecycle against an AMD DRA driver that is already
+# installed. The harness allocates and releases a pre-bound VFIO VF only; it
+# never unbinds or rebinds an AMD PF.
+existing: true
+workload: kubevirt
+kubevirt:
+  allowExisting: true
+  namespace: dra-kubevirt-gim-vf
+  image: quay.io/containerdisks/fedora:42
+  attachment: gpu
+  selector: 'device.attributes["gpu.amd.com"].type == "vfio"'
+  claimConfig:
+    driver: gpu.amd.com
+    parameters:
+      apiVersion: gpu.resource.amd.com/v1alpha1
+      kind: VfioDeviceConfig
+      iommu:
+        backendPolicy: LegacyOnly
+drivers:
+  - name: amd
+    namespace: dra-pr122-vfio-lifecycle

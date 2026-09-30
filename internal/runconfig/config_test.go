@@ -31,7 +31,7 @@ func TestValidate(t *testing.T) {
 		want   string
 	}{
 		{"missing drivers", Config{}, "at least one driver or operator"},
-		{"unknown", Config{Drivers: []Driver{{Name: "sriov", Image: "x", Chart: "x"}}}, "unsupported driver"},
+		{"unknown", Config{Drivers: []Driver{{Name: "not-a-driver", Image: "x", Chart: "x"}}}, "unsupported driver"},
 		{"duplicate", Config{Drivers: []Driver{{Name: "cpu", Image: "x", Chart: "x"}, {Name: "cpu", Image: "y", Chart: "y"}}}, "duplicate driver"},
 		{"both sources", Config{Drivers: []Driver{{Name: "cpu", Image: "x", SourcePath: "/tmp/cpu"}}}, "exactly one"},
 		{"no registry", Config{Drivers: []Driver{{Name: "cpu", SourcePath: "/tmp/cpu"}}}, "requires registry"},
@@ -78,6 +78,79 @@ func TestExistingConfig(t *testing.T) {
 	bad.Drivers = []Driver{{Name: "amd", Namespace: "openshift-amd-gpu", Image: "quay.io/example/amd:dev"}}
 	if err := bad.Validate(); err == nil || !strings.Contains(err.Error(), "must not specify") {
 		t.Fatalf("Validate() = %v, want artifact error", err)
+	}
+}
+
+func TestSriovPolicyConfig(t *testing.T) {
+	c := Config{Registry: "quay.io/team", Drivers: []Driver{{
+		Name: "sriov", SourcePath: "/tmp/sriov", SriovPolicy: &SriovPolicy{
+			Name: "all-devices", Spec: map[string]any{"configs": []any{map[string]any{}}},
+		},
+	}}}
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	bad := c
+	bad.Drivers = []Driver{{Name: "cpu", SourcePath: "/tmp/cpu", SriovPolicy: c.Drivers[0].SriovPolicy}}
+	if err := bad.Validate(); err == nil || !strings.Contains(err.Error(), "cannot configure sriovPolicy") {
+		t.Fatalf("Validate() = %v, want adapter restriction", err)
+	}
+
+	bad = c
+	bad.Drivers = append([]Driver(nil), c.Drivers...)
+	bad.Drivers[0].SriovPolicy = &SriovPolicy{}
+	if err := bad.Validate(); err == nil || !strings.Contains(err.Error(), "requires spec") {
+		t.Fatalf("Validate() = %v, want policy spec requirement", err)
+	}
+
+	bad = c
+	bad.Drivers = append([]Driver(nil), c.Drivers...)
+	bad.Existing = true
+	bad.Drivers[0].Namespace = "dra-sriov"
+	bad.Drivers[0].SourcePath = ""
+	if err := bad.Validate(); err == nil || !strings.Contains(err.Error(), "cannot create sriovPolicy") {
+		t.Fatalf("Validate() = %v, want existing-mode policy restriction", err)
+	}
+
+	bad = c
+	bad.Drivers = append([]Driver(nil), c.Drivers...)
+	bad.Drivers[0].Namespace = "driver-ns"
+	bad.Drivers[0].SriovPolicy = &SriovPolicy{Name: "all-devices", Namespace: "policy-ns", Spec: map[string]any{"configs": []any{map[string]any{}}}}
+	if err := bad.Validate(); err == nil || !strings.Contains(err.Error(), "must match driver namespace") {
+		t.Fatalf("Validate() = %v, want namespace consistency error", err)
+	}
+}
+
+func TestLoadSriovPolicy(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sriov.yaml")
+	data := `registry: quay.io/team
+drivers:
+  - name: sriov
+    sourcePath: /tmp/dra-driver-sriov
+    claimConfig:
+      requests: [device]
+      driver: sriovnetwork.k8snetworkplumbingwg.io
+      parameters:
+        apiVersion: sriovnetwork.k8snetworkplumbingwg.io/v1alpha1
+        kind: VfConfig
+    sriovPolicy:
+      namespace: sriov-driver
+      spec:
+        configs:
+          - {}
+`
+	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := c.Drivers[0].SriovPolicy
+	if policy == nil || policy.Namespace != "sriov-driver" || len(policy.Spec) != 1 || c.Drivers[0].ClaimConfig == nil {
+		t.Fatalf("unexpected SR-IOV policy: %+v", policy)
 	}
 }
 
@@ -129,6 +202,54 @@ func TestKubeVirtRejectsCPUDriver(t *testing.T) {
 	}
 	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), `kubevirt workload does not support driver "cpu"`) {
 		t.Fatalf("Validate() error = %v, want KubeVirt CPU rejection", err)
+	}
+}
+
+func TestKubeVirtVFIOClaimConfig(t *testing.T) {
+	c := Config{
+		Existing: true,
+		Workload: WorkloadKubeVirt,
+		KubeVirt: &KubeVirt{
+			AllowExisting: true,
+			Image:         "quay.io/containerdisks/fedora:latest",
+			Selector:      `device.attributes["gpu.amd.com"].type == "vfio"`,
+			ClaimConfig: &KubeVirtClaim{
+				Driver: "gpu.amd.com",
+				Parameters: map[string]any{
+					"apiVersion": "gpu.resource.amd.com/v1alpha1",
+					"kind":       "VfioDeviceConfig",
+				},
+			},
+		},
+		Drivers: []Driver{{Name: "amd", Namespace: "dra-amd"}},
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if c.KubeVirt.Attachment != KubeVirtAttachmentGPU {
+		t.Fatalf("attachment = %q, want %q", c.KubeVirt.Attachment, KubeVirtAttachmentGPU)
+	}
+}
+
+func TestKubeVirtRejectsExistingOptInWithoutExistingMode(t *testing.T) {
+	c := Config{
+		Workload: WorkloadKubeVirt,
+		KubeVirt: &KubeVirt{AllowExisting: true, Image: "quay.io/containerdisks/fedora:latest"},
+		Drivers:  []Driver{{Name: "amd", Image: "quay.io/example/amd:dev", Chart: "oci://example/amd"}},
+	}
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "requires existing") {
+		t.Fatalf("Validate() = %v, want existing-mode error", err)
+	}
+}
+
+func TestKubeVirtRejectsNegativeReadyHold(t *testing.T) {
+	c := Config{
+		Workload: WorkloadKubeVirt,
+		KubeVirt: &KubeVirt{Image: "quay.io/containerdisks/fedora:latest", HoldAfterReadySeconds: -1},
+		Drivers:  []Driver{{Name: "amd", Image: "quay.io/example/amd:dev", Chart: "oci://example/amd"}},
+	}
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "holdAfterReadySeconds") {
+		t.Fatalf("Validate() = %v, want negative ready-hold error", err)
 	}
 }
 

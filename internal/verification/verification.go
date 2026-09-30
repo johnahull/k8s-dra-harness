@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	resourcev1 "k8s.io/api/resource/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
@@ -173,6 +174,14 @@ func (r *Runner) SaveSnapshot(ctx context.Context, client kubernetes.Interface, 
 	claims, err := client.ResourceV1().ResourceClaims(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("listing ResourceClaims for snapshot: %w", err)
+	}
+	// Some Kubernetes API responses encode an empty list with a nil Items
+	// slice. Keep the snapshot JSON list-shaped for the Python verifiers.
+	if slices.Items == nil {
+		slices.Items = make([]resourcev1.ResourceSlice, 0)
+	}
+	if claims.Items == nil {
+		claims.Items = make([]resourcev1.ResourceClaim, 0)
 	}
 	snapshot := Snapshot{
 		Prefix:         prefix,

@@ -1,170 +1,371 @@
 # k8s-dra-harness
 
-Test custom Dynamic Resource Allocation (DRA) drivers on an existing Kubernetes
-or OpenShift cluster. The harness can build a local driver checkout, push its
-image to a registry, deploy the matching Helm chart, run that checkout's own
-end-to-end suite, and then run independent live-workload checks. AMD GPU, NVIDIA
-GPU, and CPU are optional, built-in adapters: select one or more in `drivers`,
-or select neither for an operator-only run. The `example` adapter targets the
-Kubernetes mock-device DRA example driver and does not require GPU hardware.
-Additional drivers can follow the
-`internal/driver.Adapter` contract. The adapters are compiled into the harness;
-they are not separately loaded plugins. To add a built-in driver, add a package
-under `internal/driver/` that registers its adapter, then import that package
-from `internal/adapters/defaults` for the supplied test suite. A custom Go
-entry point can import its own adapter set. An adapter's live workload runs on its
-own; a combined workload runs only for pairs with a registered joint policy.
+`k8s-dra-harness` is an end-to-end test harness for Kubernetes Dynamic
+Resource Allocation (DRA) drivers. It runs against an existing Kubernetes or
+OpenShift cluster and can:
 
-The cluster must serve `resource.k8s.io/v1`, be reachable through `KUBECONFIG`,
-and be able to pull any image built for the run. Source builds need Docker,
-Helm, a registry login, and the upstream checkout's build dependencies.
-OpenShift runs also need `oc`; AMD Operator bundles need `operator-sdk` and OLM.
-CPU workloads need the runtime's NRI and CDI support and compatible CPUManager
-settings. AMD workloads need GPU nodes with a working amdgpu kernel driver.
-NVIDIA runs need the NVIDIA GPU Operator chart and a working NVIDIA
-driver/toolkit on the target nodes.
+- build and push a driver checkout, or use a published image and Helm chart;
+- install and validate AMD, NVIDIA, CPU, SR-IOV, or example DRA drivers;
+- install selected AMD or NVIDIA GPU Operator prerequisites;
+- validate a driver that is already installed on a shared cluster;
+- run DRA claims, workloads, topology, capacity, release, and restart checks;
+- create direct KubeVirt VMIs that consume DRA claims; and
+- collect ResourceClaim, ResourceSlice, verifier, and command evidence.
 
-For step-by-step usage, shared-cluster safety guidance, troubleshooting, and
-configuration guidance, see the [user guide](docs/user-guide.md). The user
-guide is the canonical reference for shared-cluster modes and DRA test-plan
-behavior.
+The harness is a test tool. It is not a DRA driver, GPU operator, KubeVirt
+installer, cluster provisioner, or general-purpose cleanup tool. KubeVirt and
+OpenShift Virtualization must already be installed when those workloads are
+used.
 
-KubeVirt runs additionally need an installed KubeVirt or OpenShift
-Virtualization deployment with Kubernetes DRA enabled and the matching
-`GPUsWithDRA` or `HostDevicesWithDRA` feature gate. The harness does not install
-or enable KubeVirt. Select `workload: kubevirt` to create direct VMIs; the
-default `workload: pod` path is unchanged. KubeVirt workloads currently
-support the AMD and NVIDIA adapters, while CPU remains pod-only. Use
-`kubevirt-nvidia.yaml` as a starting point. Its guest verification requires
-`virtctl`, a cloud-init Secret that installs the matching public key, and a
-private-key Secret containing the configured key.
+## How a run works
 
-## Run
+An installation run follows this lifecycle:
+
+1. Load and validate a strict YAML configuration.
+2. Check the cluster API, platform, artifact collisions, and prerequisites.
+3. Build and push source checkouts, when `sourcePath` is used.
+4. Install selected operators and driver Helm charts.
+5. Wait for DeviceClasses, ResourceSlices, and driver pods to become ready.
+6. Run optional upstream commands from the driver checkout.
+7. Run the configured DRA test plan and live workload checks.
+8. Remove resources owned by the run when cleanup is enabled.
+
+The default installation path uses a unique run ID for derived namespaces,
+Helm releases, claims, and workloads. Helm-owned cluster-scoped resources
+follow Helm's normal uninstall behavior, so shared charts and operators should
+be reviewed before installation on a shared cluster.
+
+## Supported adapters and workloads
+
+Adapters are compiled into the harness; they are not dynamically loaded
+plugins.
+
+| Adapter | Purpose | Hardware | Workloads | Status |
+| --- | --- | --- | --- | --- |
+| `example` | Kubernetes DRA mock-device example driver | No GPU required | Pod | Recommended first run |
+| `cpu` | CPU DRA driver | CPUManager plus NRI/CDI support | Pod | Hardware/runtime dependent |
+| `amd` | AMD GPU DRA driver | AMD GPU and `amdgpu` | Pod or KubeVirt | Hardware dependent |
+| `nvidia` | NVIDIA GPU DRA driver | NVIDIA GPU, driver, and toolkit | Pod or KubeVirt | Experimental |
+| `sriov` | SR-IOV VF DRA driver | SR-IOV-capable NIC, CDI, and driver runtime prerequisites | Pod | Hardware/network dependent |
+
+The AMD and NVIDIA GPU Operator configurations can also be used without a DRA
+driver for operator/device-plugin validation. Combined multi-driver workloads
+run only when the harness has a registered joint-workload policy for that pair.
+
+## Choose a run mode
+
+| Mode | What it does | Cluster mutations |
+| --- | --- | --- |
+| Install (default) | Builds or selects artifacts, installs them, and runs checks | Yes; limited to resources owned by the run |
+| `existing: true` | Validates an installed driver and its DRA resources | Read-only by default |
+| `preflight: true` | Checks API access, collisions, release names, and prerequisites | No build, install, workload, or test-plan mutations |
+
+Existing-driver test plans are an explicit exception to the read-only default:
+`testPlan.lifecycle.allowWorkloads: true` permits temporary claims and pods,
+and `allowRestart: true` additionally permits matching driver pods to be
+restarted. Existing KubeVirt workloads require the separate
+`kubevirt.allowExisting: true` opt-in.
+
+## Before the first run
+
+Install or make available on `PATH`:
+
+- Go, `kubectl`, Helm, and a working `KUBECONFIG`;
+- Docker and a registry login for source builds;
+- Ginkgo v2 (`make install-ginkgo` installs the pinned version);
+- `oc` for OpenShift runs;
+- `operator-sdk` and OLM for AMD Operator bundle installs; and
+- `virtctl` when KubeVirt guest verification is configured.
+
+Driver and DRA workload runs require the GA DRA API, `resource.k8s.io/v1`. All
+runs must be able to pull their workload and driver images. Operator-only runs
+use the selected device-plugin path and may not need the DRA API. Additional
+requirements depend on the adapter:
+
+- `example`: a checkout of the Kubernetes DRA example driver and a pushable
+  registry;
+- `cpu`: a CPU DRA driver with compatible CPUManager, Node Resource Interface
+  (NRI), and Container Device Interface (CDI) support;
+- `amd`: AMD GPU nodes with a working `amdgpu` kernel driver and AMD DRA
+  driver; and
+- `nvidia`: NVIDIA GPU nodes with a working driver and toolkit, plus the
+  standalone NVIDIA DRA driver. The NVIDIA GPU Operator is optional unless it
+  is selected as the driver prerequisite; and
+- `sriov`: SR-IOV-capable nodes, the SR-IOV DRA driver's CDI/runtime
+  prerequisites, and a matching `SriovResourcePolicy`. Multus is needed for
+  the driver's `MULTUS` mode; `STANDALONE` mode additionally needs NRI and a
+  NetworkAttachmentDefinition configuration.
+
+Confirm the kubeconfig context before using a mode that creates resources:
 
 ```sh
-make unit-test
-DRA_HARNESS_CONFIG=examples/amd-cpu.yaml TEST_FEATURES=dra make run-tests
+export KUBECONFIG=/absolute/path/to/kubeconfig
+kubectl config current-context
+kubectl cluster-info
+kubectl api-resources --api-group=resource.k8s.io
 ```
 
-`DRA_HARNESS_CONFIG` is a strict YAML file. `sourcePath` and local `chart`
-paths are relative to the YAML file. Each driver needs either `sourcePath`
-or a tagged `image`; an image source also needs `chart`. Source builds use
-the checkout chart by default and push a unique image tag under `registry`.
-The harness fails before deployment if the target DeviceClass already exists.
-It removes only releases and namespaces owned by the run. If Helm cannot confirm
-a release's state during cleanup, the harness reports the error and retains its
-namespace for inspection. Ownership is not persisted for a later cleanup-only
-retry, so resolve the Helm/API problem and inspect the retained release and
-namespace manually before another run. Set `cleanup: false` to inspect them
-intentionally afterward.
-For local charts with dependencies, it runs `helm dependency build` in the
-checkout before installing.
+## Quick start: hardware-free validation
 
-For a driver already installed on a shared cluster, set `existing: true` and
-provide each driver's existing `namespace`. Without a `testPlan`, this is a
-read-only DRA validation: it checks the GA DRA API, DeviceClass, and nonempty
-ResourceSlices, and skips installation, workloads, upstream commands, and
-cleanup. An existing-driver run with a `testPlan` can create a temporary
-workload namespace and mutate claims, pods, or driver pods when its explicit
-lifecycle permissions allow those actions.
+The `example` adapter advertises mock devices and is the best first run when a
+GPU cluster is not available.
 
-For a prospective installation, set `preflight: true` with the normal driver
-`image`/`chart` or `sourcePath` configuration. Preflight checks cluster/API
-availability, DeviceClass collisions, and release-name availability, then
-stops without building, installing, or creating workloads.
+1. Edit [examples/example.yaml](examples/example.yaml), replacing
+   `sourcePath` with a checkout of the Kubernetes DRA example driver and
+   `registry` with a registry where Docker can push and the cluster can pull.
+2. From the repository root, run:
 
-```yaml
-namespace: dra-harness
-registry: quay.io/my-account
-drivers:
-  - name: cpu
-    sourcePath: /path/to/dra-driver-cpu
-    upstreamTests: [make, test-e2e]
-  - name: amd
-    sourcePath: /path/to/k8s-gpu-dra-driver
-```
+   ```sh
+   make unit-test
+   make install-ginkgo
 
-`upstreamTests` is an optional argument list executed from that checkout after
-deployment. It inherits `KUBECONFIG` and receives `DRA_HARNESS_IMAGE` and
-`DRA_HARNESS_NAMESPACE`. Upstream suites may need their own test images or
-settings; supply those through their documented environment variables. The
-AMD checkout's current `test-e2e` Make target references absent scripts, so
-configure this only after confirming the command in the selected revision.
+   KUBECONFIG=/absolute/path/to/kubeconfig \
+   DRA_HARNESS_CONFIG=examples/example.yaml \
+   TEST_FEATURES=dra \
+   make run-tests
+   ```
 
-An optional `amdOperator` block installs a supplied AMD GPU Operator chart on
-Kubernetes or a bundle image on OpenShift before the selected DRA drivers.
-For bundles, set `package` so cleanup can call `operator-sdk cleanup` safely.
-For charts, `image` overrides the operator controller image. The block accepts
-Helm `values` for the operator's dependencies and DeviceConfig settings.
-An operator-only run (no `drivers`) waits for `amd.com/gpu` on a node and runs
-a ROCm workload through the device plugin. When combined with a standalone AMD
-DRA driver, the harness disables the chart's default device plugin to avoid
-competing for the same GPUs.
-See [the operator example](examples/amd-operator.yaml). For an OpenShift bundle,
-provide `bundle`, `package`, and a `deviceConfig` map containing the raw
-`DeviceConfig.spec` fields to create after OLM installs the operator.
-Bundle cleanup leaves shared CRDs in place; it removes the run's DeviceConfig,
-OLM installation, and namespace.
+The run builds the driver, installs its chart, checks DRA resources, allocates
+a mock device through a pod workload, and cleans up by default. Set
+`cleanup: false` when you need to inspect the installation after the run.
 
-The `nvidia` adapter builds and installs the NVIDIA DRA driver's
-`deployments/helm/dra-driver-nvidia-gpu` chart. An optional `nvidiaOperator`
-block installs the NVIDIA GPU Operator chart first. The harness uses the
-operator's classic `ClusterPolicy`; when the standalone `nvidia` driver is
-selected, it disables the operator's legacy device plugin so only the DRA
-driver allocates GPUs. It also waits for `ClusterPolicy` readiness and aligns
-the DRA driver's `nvidiaDriverRoot` with the operator's configured driver
-directory. The operator's `GPUCluster` DRA mode is intentionally rejected
-because it would compete with the standalone driver, and preflight refuses a
-pre-existing standard NVIDIA device plugin advertising `nvidia.com/gpu`. See
-[the combined NVIDIA example](examples/nvidia.yaml) and
-[the operator-only example](examples/nvidia-operator.yaml).
+## Common workflows
 
-NVIDIA GPU allocation is experimental in the checked-out upstream driver.
-Pin the NVIDIA Operator and DRA driver checkouts or image/chart revisions when
-using this in repeatable CI, and treat the live NVIDIA run as hardware-specific
-validation rather than a production support guarantee.
+### Validate an already-installed driver
 
-### DRA test plans
-
-The optional `testPlan` block runs namespace-scoped DRA allocation scenarios
-after driver setup. It is also usable with `existing: true`, but claim,
-workload, and driver-restart mutations require explicit lifecycle opt-in.
+Use `existing: true` when the driver was installed by another system or when
+the cluster is shared. The basic mode does not create namespaces, workloads,
+claims, or driver resources:
 
 ```yaml
 existing: true
 drivers:
   - name: amd
-    namespace: kube-amd-gpu
-    podSelector: app.kubernetes.io/name=k8s-gpu-dra-driver
-testPlan:
-  profile: amd-pr-91-topology
-  scenarios: [resource-slices, counters, sibling-exclusion, release, topology]
-  lifecycle:
-    allowWorkloads: true
-  verification:
-    scriptsDir: /home/jhull/devel/dra-topology-aware-co-placement/testing/scripts
-    expectedRepoCommit: <topology-repository-commit>
-    evidenceDir: /tmp/dra-harness-evidence
-  topology:
-    - name: gpu-cpu-numa
-      matchAttribute: resource.kubernetes.io/numaNode
-      requests:
-        - name: gpu
-          deviceClass: gpu.amd.com
-        - name: cpu
-          deviceClass: dra.cpu
+    namespace: openshift-amd-gpu
 ```
 
-The harness records ResourceSlice and ResourceClaim JSON snapshots and invokes
-the topology repository's verifier tools when `scriptsDir` is configured. With
-the default commands, `dra-verify.sh` and `show-dra-topology.sh` run for the
-applicable scenarios, while `dra-counters.py` runs for the `counters`
-scenario. Custom `verification.commands` replace the default verifier list.
-The verifier checkout commit is recorded with the evidence and can be pinned
-with `expectedRepoCommit`. The topology demo script is not invoked directly
-because its broad cleanup is unsafe on shared namespaces; its claim cases are
-implemented by the harness instead.
+Run it with the same `TEST_FEATURES=dra make run-tests` command, pointing
+`DRA_HARNESS_CONFIG` at the file. The adapter name and namespace must match the
+installed driver, and the cluster must expose its DeviceClass and nonempty
+ResourceSlices.
 
-See [development TODOs](TODO.md),
-[the design](docs/superpowers/specs/2026-09-25-k8s-dra-harness-design.md)
-and [the AMD foundation history](docs/superpowers/plans/2026-09-25-amd-ci-foundation.md).
+### Check an installation before changing the cluster
+
+Use preflight mode with the image and chart you intend to deploy:
+
+```yaml
+preflight: true
+drivers:
+  - name: cpu
+    image: quay.io/example/dra-driver-cpu:dev
+    chart: oci://quay.io/example/dra-driver-cpu-chart
+```
+
+Preflight performs discovery and collision checks, then exits without building,
+installing, creating workloads, or running a test plan.
+
+### Exercise a GPU Operator
+
+Use an operator-only configuration when you want to validate the operator's
+device-plugin path without selecting a standalone DRA driver:
+
+- [AMD Operator example](examples/amd-operator.yaml)
+- [NVIDIA Operator example](examples/nvidia-operator.yaml)
+
+Use [examples/nvidia.yaml](examples/nvidia.yaml) when the NVIDIA GPU Operator
+is a prerequisite for the standalone NVIDIA DRA driver.
+
+For SR-IOV, start with [examples/sriov.yaml](examples/sriov.yaml). The example
+creates a broad policy (`configs: [{}]`) so the driver can advertise matching
+devices; narrow that policy for a real cluster. The harness defaults the chart
+to `MULTUS` mode for its generic allocation smoke workload because that
+workload does not create a NetworkAttachmentDefinition. Override
+`drivers[].values.kubeletPlugin.configurationMode` when testing a complete
+SR-IOV network setup and provide `drivers[].claimConfig` for the driver's
+opaque per-claim parameters. The SR-IOV source build honors `CONTAINER_TOOL`
+(for example, set it to `podman`); otherwise the upstream Makefile defaults to
+Docker.
+
+### Run KubeVirt or OpenShift Virtualization checks
+
+The cluster must already have KubeVirt or OpenShift Virtualization, Kubernetes
+DRA, and the relevant `GPUsWithDRA` or `HostDevicesWithDRA` feature gate. The
+harness creates a direct VMI and ResourceClaim; it does not install KubeVirt or
+change feature gates.
+
+Start with [examples/kubevirt-nvidia.yaml](examples/kubevirt-nvidia.yaml).
+KubeVirt guest verification additionally needs a cloud-init Secret containing
+the SSH public key and a private-key Secret. The configured guest command runs
+through `virtctl ssh` after the VMI starts.
+
+For a driver already installed on the cluster, use
+[examples/existing-amd-kubevirt-gim-vf.yaml](examples/existing-amd-kubevirt-gim-vf.yaml)
+or its held-VMI variant
+[examples/existing-amd-kubevirt-gim-vf-k03.yaml](examples/existing-amd-kubevirt-gim-vf-k03.yaml).
+Set `kubevirt.allowExisting: true`; this permits the harness to create and
+remove only its temporary workload resources. It does not unbind PCI devices,
+rebind PFs, or change the installed driver.
+
+`selector` and `claimConfig` can express driver-specific allocation, such as a
+pre-bound AMD GIM VFIO VF:
+
+```yaml
+existing: true
+workload: kubevirt
+kubevirt:
+  allowExisting: true
+  namespace: dra-kubevirt-gim-vf
+  image: quay.io/containerdisks/fedora:42
+  attachment: gpu
+  selector: 'device.attributes["gpu.amd.com"].type == "vfio"'
+  claimConfig:
+    driver: gpu.amd.com
+    parameters:
+      apiVersion: gpu.resource.amd.com/v1alpha1
+      kind: VfioDeviceConfig
+      iommu:
+        backendPolicy: LegacyOnly
+drivers:
+  - name: amd
+    namespace: dra-pr122-vfio-lifecycle
+```
+
+KubeVirt workloads currently support AMD and NVIDIA adapters. CPU remains
+pod-only, and KubeVirt workloads cannot be combined with the regular DRA
+`testPlan` in the same configuration.
+
+### Run reusable DRA test plans
+
+`testPlan` adds namespace-scoped claim and allocation scenarios after driver
+setup. Available scenarios are:
+
+- `resource-slices` and `counters`: read-only publication checks;
+- `sibling-exclusion` and `capacity`: AMD-specific allocation checks;
+- `release`: verifies that deleting a consumer releases its allocation;
+- `topology`: tests multi-request placement and optional claim templates; and
+- `restart`: restarts selected driver pods and checks ResourceSlice recovery.
+
+Mutating scenarios require `lifecycle.allowWorkloads: true`; `restart` also
+requires `allowRestart: true`. The test plan cleans up its own claims, pods,
+and templates between scenarios. It does not delete cluster-scoped
+DeviceClasses or ResourceSlices.
+
+Use the [DRA test-plan section of the user guide](docs/user-guide.md#dra-test-plans)
+for topology syntax, lifecycle permissions, verifier scripts, evidence
+directories, and the complete scenario behavior.
+
+## Configuration essentials
+
+Configuration is strict YAML: unknown fields are rejected. A driver selects
+exactly one artifact source:
+
+- `sourcePath` builds and pushes the checkout image. `registry` is required;
+- `image` uses an already-published image with an explicit tag, and `chart` is
+  also required; and
+- `namespace` optionally selects the driver namespace. Otherwise the harness
+  creates a run-owned namespace.
+
+Other frequently used fields include:
+
+- `cleanup`: defaults to `true` for installation runs;
+- `upstreamTests`: an argv list, not a shell command, run from the checkout
+  after deployment;
+- `drivers[].claimConfig`: optional opaque configuration applied to that
+  driver's regular pod workload claims, useful for drivers such as SR-IOV
+  `STANDALONE` mode;
+- `workload: kubevirt` and `kubevirt`: direct-VMI settings;
+- `amdOperator` or `nvidiaOperator`: optional operator prerequisites; and
+- `sriovPolicy`: an optional raw `SriovResourcePolicy.spec` for the `sriov`
+  adapter. The harness creates it after the driver chart and removes it during
+  cleanup. If `namespace` is omitted, it uses the run-owned driver namespace.
+  If it is set while the driver namespace is omitted, it also selects that
+  namespace for the driver; otherwise it must match the configured driver namespace;
+  and
+- `testPlan`: reusable DRA allocation scenarios.
+
+Relative `sourcePath`, `scriptsDir`, and `evidenceDir` values are resolved
+relative to the YAML file. Local chart paths should use a `.`-prefixed path,
+such as `./charts/driver`. The harness uses the current `KUBECONFIG`; kubeconfig
+is not configured in YAML.
+See the [user guide](docs/user-guide.md#run-configuration) for the full
+configuration contract and safety behavior.
+
+## Test runner and diagnostics
+
+The Ginkgo runner selects suites under `tests/` with `TEST_FEATURES`:
+
+```sh
+# DRA suite only
+TEST_FEATURES=dra DRA_HARNESS_CONFIG=examples/example.yaml make run-tests
+
+# Smoke and DRA suites
+TEST_FEATURES="smoke dra" DRA_HARNESS_CONFIG=examples/example.yaml make run-tests
+```
+
+Useful environment variables:
+
+- `TEST_VERBOSE=true`: verbose Ginkgo output;
+- `TEST_TRACE=true`: include Ginkgo traces;
+- `TEST_LABELS=...`: apply a Ginkgo label filter; and
+- `ARTIFACT_DIR=/path/to/artifacts`: write the smoke JUnit report there.
+
+For failures, first confirm the kubeconfig context and DRA API discovery, then
+inspect the driver pods, DeviceClasses, ResourceSlices, ResourceClaims, and
+events in the run-specific namespace. Do not delete broad namespaces or all
+claims on a shared cluster. See the [troubleshooting guide](docs/user-guide.md#troubleshooting)
+for focused checks and cleanup guidance.
+
+## Repository layout
+
+```text
+internal/driver/       Built-in adapter contracts and driver implementations
+internal/harness/      Cluster lifecycle, readiness, workloads, and cleanup
+internal/kubevirt/      Direct-VMI and guest-verification backend
+internal/runconfig/    Strict YAML configuration and validation
+internal/testplan/     Reusable namespace-scoped DRA scenarios
+internal/verification/  External verifier execution and evidence collection
+tests/dra/              Integration suite for selected driver runs
+tests/smoke/            Basic harness/cluster smoke suite
+examples/               Starter configurations for supported workflows
+docs/                   User and adapter-authoring documentation
+```
+
+## Development
+
+Run the local checks from the repository root:
+
+```sh
+make unit-test
+make verify
+go test -tags=integration ./tests/dra -run '^$'
+```
+
+The last command compiles the integration suite without connecting to a
+cluster. To add a built-in adapter, implement the
+[`internal/driver.Adapter`](internal/driver/driver.go) contract, register the
+adapter, and add it to the supplied adapter set. See
+[adapter authoring](docs/adapter-authoring.md).
+
+## Documentation
+
+- [User guide](docs/user-guide.md) — complete setup, configuration, safety,
+  KubeVirt, operators, test plans, verification, and troubleshooting.
+- [Adapter authoring](docs/adapter-authoring.md) — extend the built-in driver
+  model.
+- [Development TODOs](TODO.md) — current hardware validation and follow-up
+  work.
+
+## Current limitations
+
+- A live cluster is required for integration runs; this repository does not
+  provision one.
+- The `example` adapter is the only path that requires no special hardware;
+  CPU runs still depend on CPU runtime configuration.
+- AMD, CPU, and NVIDIA runs depend on the selected driver revision and node
+  runtime configuration.
+- SR-IOV runs require matching hardware and a resource policy; a policy with
+  an empty `configs` list will not advertise devices.
+- NVIDIA GPU allocation is experimental and should be validated with pinned
+  Operator and driver revisions.
+- KubeVirt testing depends on an existing KubeVirt/OpenShift Virtualization
+  installation and enabled DRA feature gates.

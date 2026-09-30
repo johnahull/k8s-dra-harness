@@ -17,8 +17,9 @@ Install or make available on `PATH`:
 - Go, for unit tests and source builds.
 - `kubectl` and a working `KUBECONFIG`.
 - Helm for chart installation.
-- Docker for the built-in source-build adapters, plus the selected checkout's
-  own build dependencies.
+- Docker for the built-in source-build adapters (the SR-IOV adapter also
+  honors its checkout's `CONTAINER_TOOL` setting), plus the selected
+  checkout's own build dependencies.
 - Ginkgo v2 for the integration suites. Run `make install-ginkgo` if it is
   not already installed.
 - `oc` for OpenShift runs. AMD Operator bundle installs additionally require
@@ -50,6 +51,7 @@ resources.
 | `cpu` | No | CPU DRA driver, Node Resource Interface (NRI)/Container Device Interface (CDI) support, and compatible CPUManager configuration. |
 | `amd` | Yes | AMD GPU nodes with a working `amdgpu` kernel driver and the AMD DRA driver. |
 | `nvidia` | Yes | NVIDIA GPU Operator prerequisites, NVIDIA driver/toolkit, and the standalone NVIDIA DRA driver. |
+| `sriov` | No GPU, but SR-IOV NICs are required | SR-IOV-capable nodes, the driver's CDI/runtime prerequisites, and a matching `SriovResourcePolicy`. Multus is needed for `MULTUS` mode; `STANDALONE` mode additionally needs NRI and a NetworkAttachmentDefinition configuration. |
 
 The `example` adapter is the recommended first validation because it advertises
 mock devices and does not require a GPU. NVIDIA support is experimental and
@@ -121,6 +123,67 @@ Each driver selects exactly one artifact source:
   `DRA_HARNESS_NAMESPACE`.
 - `podSelector` identifies existing driver pods for the test-plan `restart`
   scenario. It is required for existing-driver restart tests.
+- `drivers[].claimConfig` adds opaque driver parameters to that driver's regular
+  pod workload ResourceClaims. It is useful when a driver needs per-claim
+  configuration.
+
+The `sriov` adapter accepts an optional `sriovPolicy` block. The harness creates
+the namespaced `SriovResourcePolicy` after installing the driver chart and
+deletes it during cleanup:
+
+```yaml
+drivers:
+  - name: sriov
+    sourcePath: /path/to/dra-driver-sriov
+    sriovPolicy:
+      name: all-devices
+      spec:
+        configs:
+          - {}
+```
+
+If `sriovPolicy.namespace` is omitted, the policy is created in the driver's
+run-owned namespace. If it is set while `driver.namespace` is omitted, it also
+selects that namespace for the driver; otherwise the two namespaces must
+match. The example policy above is intentionally broad; use the SR-IOV
+driver's policy selectors to restrict which VFs are advertised on a real
+cluster. Without a matching policy, the driver publishes no devices.
+For the generic pod allocation check, the harness defaults the chart's
+`kubeletPlugin.configurationMode` to `MULTUS`, avoiding a fabricated network
+attachment. To exercise `STANDALONE`, provide the driver's opaque claim
+configuration and a pre-existing NetworkAttachmentDefinition; the harness does
+not create the NAD:
+
+```yaml
+drivers:
+  - name: sriov
+    image: quay.io/example/dra-driver-sriov:dev
+    chart: /path/to/dra-driver-sriov/deployments/helm/dra-driver-sriov
+    values:
+      kubeletPlugin:
+        configurationMode: STANDALONE
+    claimConfig:
+      requests: [device]
+      driver: sriovnetwork.k8snetworkplumbingwg.io
+      parameters:
+        apiVersion: sriovnetwork.k8snetworkplumbingwg.io/v1alpha1
+        kind: VfConfig
+        ifName: net1
+        netAttachDefName: vf-test1
+        netAttachDefNamespace: sriov-network-config
+```
+
+For `STANDALONE`, create `vf-test1` as a NetworkAttachmentDefinition in
+`sriov-network-config` before the run. The harness creates a run-specific
+workload namespace, so omitting `netAttachDefNamespace` would make the driver
+look for the NAD in that temporary namespace.
+
+The `MULTUS` path is the default because it can exercise generic DRA
+allocation without requiring that network attachment configuration.
+
+Complete example: [examples/sriov.yaml](../examples/sriov.yaml).
+Its source build honors `CONTAINER_TOOL=podman` as well as the upstream Docker
+default.
 
 The harness refuses to install over an existing DeviceClass or Helm release
 with the same run name. For an installation run, `cleanup` defaults to true.

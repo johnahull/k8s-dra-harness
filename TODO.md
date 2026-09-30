@@ -28,6 +28,10 @@ smoke suite has not yet been run against a live cluster.
       disposable NVIDIA cluster. Verify the operator's legacy device plugin is
       disabled, GPU ResourceSlices are published, the DRA workload succeeds,
       and cleanup removes only this run's resources.
+- [ ] Run the SR-IOV adapter on SR-IOV-capable nodes with a scoped
+      `SriovResourcePolicy`. Verify ResourceSlices, CDI environment injection,
+      and policy/driver cleanup in both supported configuration modes where
+      the required Multus or NRI prerequisites are available.
 
 ## 2. Prove extensibility with another DRA driver
 

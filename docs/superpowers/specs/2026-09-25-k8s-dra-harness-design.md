@@ -27,5 +27,6 @@ package name is required so `operator-sdk cleanup` can remove it. An
 operator-only run checks the device plugin and a ROCm workload.
 
 Automated unit, lint, vet, and compile checks run without a cluster. Live tests
-need a compatible cluster and hardware. Other adapters, including NVIDIA GPU,
-SR-IOV and DRANet, are follow-up work.
+need a compatible cluster and hardware. NVIDIA GPU and DRANet remain
+follow-up work; SR-IOV is now supported through the built-in adapter and its
+policy-aware configuration described in the user guide.

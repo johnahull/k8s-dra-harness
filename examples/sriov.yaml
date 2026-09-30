@@ -1,0 +1,14 @@
+# Build and run the SR-IOV DRA driver, advertising devices selected by the
+# policy below. Replace sourcePath and registry with values for your environment.
+# This requires SR-IOV-capable nodes and the driver's CDI/runtime prerequisites.
+namespace: dra-harness
+registry: quay.io/my-account
+drivers:
+  - name: sriov
+    sourcePath: /path/to/dra-driver-sriov
+    sriovPolicy:
+      name: all-devices
+      # If omitted, the policy is created in the run-owned driver namespace.
+      spec:
+        configs:
+          - {}

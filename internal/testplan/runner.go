@@ -3,6 +3,7 @@ package testplan
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	resourcev1 "k8s.io/api/resource/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/apimachinery/pkg/util/wait"
 )
@@ -216,6 +218,9 @@ func (r *Runner) runTopologyCase(ctx context.Context, topology runconfig.Topolog
 		ObjectMeta: metav1.ObjectMeta{Name: claimName, Namespace: r.namespace, Labels: r.labels()},
 		Spec:       resourcev1.ResourceClaimSpec{Devices: resourcev1.DeviceClaim{Requests: requests}},
 	}
+	if err := r.configureClaim(claim); err != nil {
+		return err
+	}
 	if topology.MatchAttribute != "" {
 		claim.Spec.Devices.Constraints = []resourcev1.DeviceConstraint{{
 			Requests:       requestNames(topology.Requests),
@@ -338,7 +343,7 @@ func (r *Runner) releaseClass(ctx context.Context) (string, error) {
 			candidates = append(candidates, adapter.DeviceClass())
 		}
 	}
-	for _, name := range []string{"amd", "nvidia", "cpu", "example"} {
+	for _, name := range []string{"amd", "nvidia", "sriov", "cpu", "example"} {
 		adapter, err := driver.Get(name)
 		if err == nil {
 			candidates = append(candidates, adapter.DeviceClass())
@@ -441,12 +446,16 @@ func (r *Runner) restart(ctx context.Context, targets []DriverTarget) error {
 
 func (r *Runner) createSelectedConsumer(ctx context.Context, claimName, podName, class, selector string) (string, string, error) {
 	exact := &resourcev1.ExactDeviceRequest{DeviceClassName: class}
+	selector = r.defaultSelector(selector)
 	if selector != "" {
 		exact.Selectors = []resourcev1.DeviceSelector{{CEL: &resourcev1.CELDeviceSelector{Expression: selector}}}
 	}
 	claim := &resourcev1.ResourceClaim{
 		ObjectMeta: metav1.ObjectMeta{Name: claimName, Namespace: r.namespace, Labels: r.labels()},
 		Spec:       resourcev1.ResourceClaimSpec{Devices: resourcev1.DeviceClaim{Requests: []resourcev1.DeviceRequest{{Name: "device", Exactly: exact}}}},
+	}
+	if err := r.configureClaim(claim); err != nil {
+		return "", "", err
 	}
 	if _, err := r.clients.K8s.ResourceV1().ResourceClaims(r.namespace).Create(ctx, claim, metav1.CreateOptions{}); err != nil {
 		return "", "", fmt.Errorf("creating claim %s: %w", claimName, err)
@@ -477,6 +486,31 @@ func (r *Runner) consumerPod(name string, claims []corev1.PodResourceClaim) *cor
 			Containers:     []corev1.Container{{Name: "test", Image: image, Command: []string{"/bin/sh", "-ec", "sleep 600"}, Resources: corev1.ResourceRequirements{Claims: containerClaims}}},
 		},
 	}
+}
+
+func (r *Runner) defaultSelector(selector string) string {
+	if selector != "" {
+		return selector
+	}
+	return r.config.Selector
+}
+
+func (r *Runner) configureClaim(claim *resourcev1.ResourceClaim) error {
+	if r.config.ClaimConfig == nil {
+		return nil
+	}
+	parameters, err := json.Marshal(r.config.ClaimConfig.Parameters)
+	if err != nil {
+		return fmt.Errorf("encoding test-plan claim parameters: %w", err)
+	}
+	claim.Spec.Devices.Config = []resourcev1.DeviceClaimConfiguration{{
+		Requests: r.config.ClaimConfig.Requests,
+		DeviceConfiguration: resourcev1.DeviceConfiguration{Opaque: &resourcev1.OpaqueDeviceConfiguration{
+			Driver:     r.config.ClaimConfig.Driver,
+			Parameters: runtime.RawExtension{Raw: parameters},
+		}},
+	}}
+	return nil
 }
 
 func (r *Runner) waitAllocated(ctx context.Context, podName string, claims []string) error {
@@ -649,19 +683,46 @@ func (r *Runner) Cleanup(ctx context.Context) error {
 			problems = append(problems, fmt.Errorf("deleting test pod %s: %w", pod, err))
 		}
 	}
-	for _, claim := range r.claims {
-		if err := wait.PollUntilContextTimeout(ctx, 2*time.Second, 20*time.Second, true, func(ctx context.Context) (bool, error) {
-			current, err := r.clients.K8s.ResourceV1().ResourceClaims(r.namespace).Get(ctx, claim, metav1.GetOptions{})
-			if apierrors.IsNotFound(err) {
-				return true, nil
-			}
+	// DRA keeps a claim reserved until the consuming pod has disappeared.
+	// Poll one labeled list rather than one GET per pod: capacity scenarios can
+	// own several consumers and the Kubernetes client rate limiter otherwise
+	// spends the cleanup budget on redundant requests.
+	if len(r.pods) > 0 {
+		if err := wait.PollUntilContextTimeout(ctx, 2*time.Second, 2*time.Minute, true, func(ctx context.Context) (bool, error) {
+			pods, err := r.clients.K8s.CoreV1().Pods(r.namespace).List(ctx, metav1.ListOptions{LabelSelector: "dra-harness/run=" + r.owner})
 			if err != nil {
+				if apierrors.IsNotFound(err) {
+					return true, nil
+				}
 				return false, err
 			}
-			return current.Status.Allocation == nil, nil
+			return len(pods.Items) == 0, nil
 		}); err != nil {
-			problems = append(problems, fmt.Errorf("waiting for test claim %s release: %w", claim, err))
+			problems = append(problems, fmt.Errorf("waiting for test pod deletion: %w", err))
 		}
+	}
+	// Wait for all owned claims to lose their allocation before deleting them.
+	// This is also list-based to keep cleanup bounded for capacity scenarios.
+	if len(r.claims) > 0 {
+		if err := wait.PollUntilContextTimeout(ctx, 2*time.Second, 2*time.Minute, true, func(ctx context.Context) (bool, error) {
+			claims, err := r.clients.K8s.ResourceV1().ResourceClaims(r.namespace).List(ctx, metav1.ListOptions{LabelSelector: "dra-harness/run=" + r.owner})
+			if err != nil {
+				if apierrors.IsNotFound(err) {
+					return true, nil
+				}
+				return false, err
+			}
+			for _, claim := range claims.Items {
+				if claim.Status.Allocation != nil {
+					return false, nil
+				}
+			}
+			return true, nil
+		}); err != nil {
+			problems = append(problems, fmt.Errorf("waiting for test claims release: %w", err))
+		}
+	}
+	for _, claim := range r.claims {
 		if err := r.clients.K8s.ResourceV1().ResourceClaims(r.namespace).Delete(ctx, claim, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
 			problems = append(problems, fmt.Errorf("deleting test claim %s: %w", claim, err))
 		}

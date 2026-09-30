@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +19,7 @@ import (
 	resourcev1 "k8s.io/api/resource/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 )
 
@@ -58,6 +60,22 @@ func (r *Runner) ValidateExisting(ctx context.Context) error {
 			return fmt.Errorf("existing driver %s has no nonempty ResourceSlices for %q", config.Name, adapter.DriverName())
 		}
 		r.Drivers = append(r.Drivers, installed)
+	}
+	if r.Config.Workload == runconfig.WorkloadKubeVirt && r.Config.KubeVirt.AllowExisting {
+		workload := kubevirt.New(r.Client)
+		if err := workload.Preflight(ctx, r.Config.KubeVirt.Attachment); err != nil {
+			return fmt.Errorf("KubeVirt preflight: %w", err)
+		}
+		if r.Config.KubeVirt.Guest != nil {
+			if err := kubevirt.ValidateGuest(ctx, r.Client, r.WorkloadNamespace(), r.Config.KubeVirt.Guest); err != nil {
+				return fmt.Errorf("KubeVirt guest preflight: %w", err)
+			}
+		}
+		if r.Config.KubeVirt.CloudInitSecret != "" {
+			if _, err := r.Client.K8s.CoreV1().Secrets(r.WorkloadNamespace()).Get(ctx, r.Config.KubeVirt.CloudInitSecret, metav1.GetOptions{}); err != nil {
+				return fmt.Errorf("reading KubeVirt cloud-init Secret %s/%s: %w", r.WorkloadNamespace(), r.Config.KubeVirt.CloudInitSecret, err)
+			}
+		}
 	}
 	return nil
 }
@@ -127,6 +145,40 @@ func (r *Runner) CheckDriver(ctx context.Context, d Installed) error {
 
 // RunWorkload allocates one device and proves the workload can use it.
 func (r *Runner) RunWorkload(ctx context.Context, d Installed) error {
+	if r.Config.Existing {
+		if r.Config.Workload != runconfig.WorkloadKubeVirt || r.Config.KubeVirt == nil || !r.Config.KubeVirt.AllowExisting {
+			return errors.New("existing-driver workloads require kubevirt.allowExisting: true")
+		}
+		return r.runExistingKubeVirtWorkload(ctx, d)
+	}
+	return r.runWorkload(ctx, []Installed{d})
+}
+
+func (r *Runner) runExistingKubeVirtWorkload(ctx context.Context, d Installed) (runErr error) {
+	namespace := r.WorkloadNamespace()
+	_, err := r.Client.K8s.CoreV1().Namespaces().Get(ctx, namespace, metav1.GetOptions{})
+	created := false
+	if apierrors.IsNotFound(err) {
+		if err := r.detectPlatform(ctx); err != nil {
+			return err
+		}
+		if err := r.ensureNamespace(ctx, namespace); err != nil {
+			return err
+		}
+		created = true
+	} else if err != nil {
+		return fmt.Errorf("checking KubeVirt workload namespace %s: %w", namespace, err)
+	}
+	defer func() {
+		if !created {
+			return
+		}
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		if err := r.Client.K8s.CoreV1().Namespaces().Delete(cleanupCtx, namespace, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+			runErr = errors.Join(runErr, fmt.Errorf("deleting KubeVirt workload namespace %s: %w", namespace, err))
+		}
+	}()
 	return r.runWorkload(ctx, []Installed{d})
 }
 
@@ -248,6 +300,9 @@ func (r *Runner) runWorkload(ctx context.Context, selected []Installed) error {
 		claimName := name + "-" + d.Config.Name
 		claim := &resourcev1.ResourceClaim{ObjectMeta: metav1.ObjectMeta{Name: claimName, Namespace: ns},
 			Spec: resourcev1.ResourceClaimSpec{Devices: resourcev1.DeviceClaim{Requests: []resourcev1.DeviceRequest{{Name: "device", Exactly: &resourcev1.ExactDeviceRequest{DeviceClassName: d.Adapter.DeviceClass()}}}}}}
+		if err := configureDriverClaim(claim, d.Config.ClaimConfig); err != nil {
+			return fmt.Errorf("configuring %s claim: %w", d.Config.Name, err)
+		}
 		if _, err := r.Client.K8s.ResourceV1().ResourceClaims(ns).Create(ctx, claim, metav1.CreateOptions{}); err != nil {
 			return fmt.Errorf("creating %s claim: %w", d.Config.Name, err)
 		}
@@ -326,4 +381,22 @@ func (r *Runner) runWorkload(ctx context.Context, selected []Installed) error {
 		}
 		return true, nil
 	})
+}
+
+func configureDriverClaim(claim *resourcev1.ResourceClaim, config *runconfig.ClaimConfig) error {
+	if config == nil {
+		return nil
+	}
+	parameters, err := json.Marshal(config.Parameters)
+	if err != nil {
+		return fmt.Errorf("encoding claim parameters: %w", err)
+	}
+	claim.Spec.Devices.Config = []resourcev1.DeviceClaimConfiguration{{
+		Requests: config.Requests,
+		DeviceConfiguration: resourcev1.DeviceConfiguration{Opaque: &resourcev1.OpaqueDeviceConfiguration{
+			Driver:     config.Driver,
+			Parameters: runtime.RawExtension{Raw: parameters},
+		}},
+	}}
+	return nil
 }

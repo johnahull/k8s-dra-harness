@@ -20,6 +20,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/rand"
 )
 
@@ -35,7 +37,17 @@ type Installed struct {
 
 const nvidiaAdapterName = "nvidia"
 
-// Runner owns only namespaces and Helm releases created during this run.
+var sriovPolicyGVR = schema.GroupVersionResource{
+	Group: "sriovnetwork.k8snetworkplumbingwg.io", Version: "v1alpha1", Resource: "sriovresourcepolicies",
+}
+
+type ownedSriovPolicy struct {
+	namespace string
+	name      string
+}
+
+// Runner owns only namespaces, Helm releases, and run-scoped policy objects
+// created during this run.
 type Runner struct {
 	Config           *runconfig.Config
 	Client           *clients.Settings
@@ -46,6 +58,7 @@ type Runner struct {
 	bundlePackage    string
 	bundleNamespace  string
 	deviceConfigName string
+	sriovPolicies    []ownedSriovPolicy
 	openshift        bool
 }
 
@@ -116,7 +129,7 @@ func (r *Runner) Preflight(ctx context.Context) error {
 				return fmt.Errorf("checking DeviceClass %q: %w", class, err)
 			}
 		}
-		ns := r.namespace(d.Namespace)
+		ns := r.driverNamespace(d)
 		name := "dra-" + d.Name + "-" + r.ID
 		if err := r.releases.requireAbsent(ctx, release{ns, name}); err != nil {
 			return err
@@ -189,7 +202,7 @@ func (r *Runner) Start(ctx context.Context) error {
 			return err
 		}
 		r.Drivers = append(r.Drivers, Installed{Adapter: a, Config: d, Image: image, Chart: chart,
-			Namespace: r.namespace(d.Namespace), Release: "dra-" + d.Name + "-" + r.ID})
+			Namespace: r.driverNamespace(d), Release: "dra-" + d.Name + "-" + r.ID})
 	}
 	if err := r.ensureNamespace(ctx, r.WorkloadNamespace()); err != nil {
 		return err
@@ -224,6 +237,9 @@ func (r *Runner) Start(ctx context.Context) error {
 			return err
 		}
 	}
+	if err := r.installSriovPolicies(ctx); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -241,6 +257,13 @@ func (r *Runner) namespace(configured string) string {
 		return configured
 	}
 	return r.Config.Namespace + "-" + r.ID
+}
+
+func (r *Runner) driverNamespace(configured runconfig.Driver) string {
+	if configured.Name == "sriov" && configured.Namespace == "" && configured.SriovPolicy != nil && configured.SriovPolicy.Namespace != "" {
+		return configured.SriovPolicy.Namespace
+	}
+	return r.namespace(configured.Namespace)
 }
 
 func (r *Runner) ensureNamespace(ctx context.Context, name string) error {
@@ -311,6 +334,9 @@ func (r *Runner) installNVIDIAOperator(ctx context.Context) error {
 // Cleanup releases resources in reverse order, continuing after errors.
 func (r *Runner) Cleanup(ctx context.Context) error {
 	var problems []error
+	if err := r.deleteSriovPolicies(ctx); err != nil {
+		problems = append(problems, err)
+	}
 	releaseErr := r.releases.cleanup(ctx)
 	if releaseErr != nil {
 		problems = append(problems, releaseErr)
@@ -344,6 +370,79 @@ func (r *Runner) Cleanup(ctx context.Context) error {
 		}
 	}
 	return errors.Join(problems...)
+}
+
+func (r *Runner) installSriovPolicies(ctx context.Context) error {
+	if len(r.sriovPolicies) > 0 {
+		return errors.New("SR-IOV policies were already installed by this run")
+	}
+	for _, d := range r.Drivers {
+		policy := d.Config.SriovPolicy
+		if policy == nil {
+			continue
+		}
+		if r.Client.Dynamic == nil {
+			return errors.New("dynamic Kubernetes client is required for sriovPolicy")
+		}
+		namespace := d.Namespace
+		if err := r.ensureNamespace(ctx, namespace); err != nil {
+			return fmt.Errorf("preparing SR-IOV policy namespace %s: %w", namespace, err)
+		}
+		name := policy.Name
+		if name == "" {
+			name = "dra-harness-" + r.ID
+		}
+		object := sriovPolicyObject(namespace, name, r.ID, policy.Spec)
+		if _, err := r.Client.Dynamic.Resource(sriovPolicyGVR).Namespace(namespace).Create(ctx, object, metav1.CreateOptions{}); err != nil {
+			// A transport error can be returned after the API server has
+			// persisted the object. Recover ownership only when the object carries
+			// this run's labels; never delete an unrelated pre-existing policy.
+			if existing, getErr := r.Client.Dynamic.Resource(sriovPolicyGVR).Namespace(namespace).Get(ctx, name, metav1.GetOptions{}); getErr == nil && sriovPolicyOwned(existing, r.ID) {
+				r.sriovPolicies = append(r.sriovPolicies, ownedSriovPolicy{namespace: namespace, name: name})
+			}
+			return fmt.Errorf("creating SR-IOV policy %s/%s: %w", namespace, name, err)
+		}
+		r.sriovPolicies = append(r.sriovPolicies, ownedSriovPolicy{namespace: namespace, name: name})
+	}
+	return nil
+}
+
+func (r *Runner) deleteSriovPolicies(ctx context.Context) error {
+	if len(r.sriovPolicies) == 0 {
+		return nil
+	}
+	if r.Client.Dynamic == nil {
+		return errors.New("dynamic Kubernetes client is required to clean up sriovPolicy")
+	}
+	var problems []error
+	for i := len(r.sriovPolicies) - 1; i >= 0; i-- {
+		policy := r.sriovPolicies[i]
+		if err := r.Client.Dynamic.Resource(sriovPolicyGVR).Namespace(policy.namespace).Delete(ctx, policy.name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+			problems = append(problems, fmt.Errorf("deleting SR-IOV policy %s/%s: %w", policy.namespace, policy.name, err))
+		}
+	}
+	return errors.Join(problems...)
+}
+
+func sriovPolicyObject(namespace, name, runID string, spec map[string]any) *unstructured.Unstructured {
+	return &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "sriovnetwork.k8snetworkplumbingwg.io/v1alpha1",
+		"kind":       "SriovResourcePolicy",
+		"metadata": map[string]any{
+			"name":      name,
+			"namespace": namespace,
+			"labels": map[string]any{
+				"app.kubernetes.io/managed-by": "k8s-dra-harness",
+				"dra-harness/run":              runID,
+			},
+		},
+		"spec": spec,
+	}}
+}
+
+func sriovPolicyOwned(object *unstructured.Unstructured, runID string) bool {
+	labels := object.GetLabels()
+	return labels["app.kubernetes.io/managed-by"] == "k8s-dra-harness" && labels["dra-harness/run"] == runID
 }
 
 func (r *Runner) createDeviceConfig(ctx context.Context, namespace string, spec map[string]any) error {

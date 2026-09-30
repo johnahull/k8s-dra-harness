@@ -1,6 +1,7 @@
 package kubevirt
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/johnahull/k8s-dra-harness/internal/runconfig"
@@ -31,6 +32,41 @@ func TestBuildVMIHostDeviceAndCloudInit(t *testing.T) {
 	}
 	if len(vmi.Spec.Domain.Devices.Disks) != 2 || vmi.Spec.Domain.Devices.Disks[1].CDRom == nil {
 		t.Fatalf("unexpected cloud-init disk: %+v", vmi.Spec.Domain.Devices.Disks)
+	}
+}
+
+func TestBuildVFIOClaim(t *testing.T) {
+	claim, err := BuildClaim("claim", "test", &runconfig.KubeVirt{
+		Selector: `device.attributes["gpu.amd.com"].type == "vfio"`,
+		ClaimConfig: &runconfig.KubeVirtClaim{
+			Driver: "gpu.amd.com",
+			Parameters: map[string]any{
+				"apiVersion": "gpu.resource.amd.com/v1alpha1",
+				"kind":       "VfioDeviceConfig",
+				"iommu":      map[string]any{"backendPolicy": "LegacyOnly"},
+			},
+		},
+	}, "amd", "gpu.amd.com", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := claim.Spec.Devices.Requests[0]
+	if len(request.Exactly.Selectors) != 1 || request.Exactly.Selectors[0].CEL == nil || request.Exactly.Selectors[0].CEL.Expression != `device.attributes["gpu.amd.com"].type == "vfio"` {
+		t.Fatalf("unexpected claim selector: %+v", request.Exactly.Selectors)
+	}
+	if len(claim.Spec.Devices.Config) != 1 || claim.Spec.Devices.Config[0].Opaque == nil {
+		t.Fatalf("unexpected claim config: %+v", claim.Spec.Devices.Config)
+	}
+	opaque := claim.Spec.Devices.Config[0].Opaque
+	if opaque.Driver != "gpu.amd.com" {
+		t.Fatalf("opaque driver = %q", opaque.Driver)
+	}
+	var parameters map[string]any
+	if err := json.Unmarshal(opaque.Parameters.Raw, &parameters); err != nil {
+		t.Fatal(err)
+	}
+	if parameters["kind"] != "VfioDeviceConfig" {
+		t.Fatalf("unexpected opaque parameters: %v", parameters)
 	}
 }
 
