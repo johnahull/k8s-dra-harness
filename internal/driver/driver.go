@@ -25,15 +25,15 @@ type Adapter interface {
 }
 
 // KubeVirtDevice describes how an adapter's DRA claim is attached to a
-// KubeVirt VMI. It is intentionally optional: adapters without a guest-device
-// representation continue to support the pod workload only.
+// KubeVirt VMI. It is intentionally optional: adapters without a supported
+// KubeVirt DRA attachment continue to support the pod workload only.
 type KubeVirtDevice struct {
 	Attachment string
 	Name       string
 }
 
 // KubeVirtAdapter is implemented by adapters that can be tested through
-// KubeVirt's GPU or HostDevice DRA fields.
+// KubeVirt's DRA-backed device or resource fields.
 type KubeVirtAdapter interface {
 	KubeVirtDevice() KubeVirtDevice
 }

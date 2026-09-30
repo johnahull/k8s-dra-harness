@@ -222,6 +222,12 @@ func (r *Runner) Start(ctx context.Context) error {
 			return err
 		}
 		driverValues := d.Config.Values
+		if r.Config.Workload == runconfig.WorkloadKubeVirt && d.Config.Name == "cpu" {
+			// KubeVirt CPU claims consume the grouped dra.cpu/cpu capacity.
+			// Keep the pod workload's historical individual-mode default intact,
+			// but make the KubeVirt installation unambiguously compatible.
+			driverValues = groupedCPUValues(driverValues)
+		}
 		var err error
 		if d.Config.Name == nvidiaAdapterName && r.Config.NVIDIAOperator != nil {
 			driverValues, err = nvidiaoperator.DriverValues(driverValues, r.Config.NVIDIAOperator)
@@ -241,6 +247,32 @@ func (r *Runner) Start(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+func groupedCPUValues(values map[string]any) map[string]any {
+	out := cloneValues(values)
+	config, ok := out["driverConfig"].(map[string]any)
+	if !ok {
+		config = map[string]any{}
+		out["driverConfig"] = config
+	}
+	config["cpuDeviceMode"] = "grouped"
+	return out
+}
+
+func cloneValues(values map[string]any) map[string]any {
+	if values == nil {
+		return map[string]any{}
+	}
+	out := make(map[string]any, len(values))
+	for key, value := range values {
+		if nested, ok := value.(map[string]any); ok {
+			out[key] = cloneValues(nested)
+			continue
+		}
+		out[key] = value
+	}
+	return out
 }
 
 // WorkloadNamespace is unique to this invocation unless a KubeVirt namespace

@@ -10,6 +10,7 @@ import (
 
 	"github.com/johnahull/k8s-dra-harness/internal/driver"
 	"gopkg.in/yaml.v3"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/util/validation"
 )
 
@@ -33,6 +34,8 @@ const (
 	WorkloadKubeVirt             = "kubevirt"
 	KubeVirtAttachmentGPU        = "gpu"
 	KubeVirtAttachmentHostDevice = "hostDevice"
+	KubeVirtAttachmentCPU        = "cpu"
+	KubeVirtAttachmentNetwork    = "network"
 )
 
 // KubeVirt selects the direct-VMI workload backend. The referenced image and
@@ -61,8 +64,16 @@ type ClaimConfig struct {
 	Parameters map[string]any `yaml:"parameters"`
 }
 
-// KubeVirtClaim is retained as a descriptive alias for KubeVirt configurations.
-type KubeVirtClaim = ClaimConfig
+// KubeVirtClaim configures the ResourceClaim consumed by a KubeVirt VMI.
+// Capacity is used by capacity-based drivers such as the grouped CPU DRA
+// driver; Driver and Parameters configure opaque device requests such as
+// SR-IOV VF setup.
+type KubeVirtClaim struct {
+	Requests   []string       `yaml:"requests"`
+	Driver     string         `yaml:"driver"`
+	Parameters map[string]any `yaml:"parameters"`
+	Capacity   map[string]any `yaml:"capacity"`
+}
 
 // KubeVirtGuest describes optional in-guest verification through virtctl ssh.
 // The private key is read from a Kubernetes Secret and is never written to the
@@ -249,26 +260,53 @@ func (c *Config) Validate() error {
 			}
 			if c.KubeVirt.Attachment == "" {
 				c.KubeVirt.Attachment = KubeVirtAttachmentGPU
+				if len(c.Drivers) == 1 {
+					if adapter, err := driver.Get(c.Drivers[0].Name); err == nil {
+						if device, ok := driver.KubeVirtDeviceFor(adapter); ok && device.Attachment != "" {
+							c.KubeVirt.Attachment = device.Attachment
+						}
+					}
+				}
 			}
-			if c.KubeVirt.Attachment != KubeVirtAttachmentGPU && c.KubeVirt.Attachment != KubeVirtAttachmentHostDevice {
-				problems = append(problems, fmt.Errorf("kubevirt attachment %q must be gpu or hostDevice", c.KubeVirt.Attachment))
+			switch c.KubeVirt.Attachment {
+			case KubeVirtAttachmentGPU, KubeVirtAttachmentHostDevice, KubeVirtAttachmentCPU, KubeVirtAttachmentNetwork:
+			default:
+				problems = append(problems, fmt.Errorf("unsupported kubevirt attachment %q (use gpu, hostDevice, cpu, or network)", c.KubeVirt.Attachment))
 			}
 			if c.KubeVirt.Namespace != "" && len(validation.IsDNS1123Label(c.KubeVirt.Namespace)) > 0 {
 				problems = append(problems, errors.New("kubevirt namespace must be a DNS label"))
 			}
+			if c.KubeVirt.Attachment == KubeVirtAttachmentNetwork && c.KubeVirt.DeviceName != "" {
+				if len(validation.IsDNS1123Label(c.KubeVirt.DeviceName)) > 0 || c.KubeVirt.DeviceName == "default" {
+					problems = append(problems, errors.New("kubevirt network deviceName must be a DNS label other than default"))
+				}
+			}
 			if c.KubeVirt.ClaimConfig != nil {
 				claim := c.KubeVirt.ClaimConfig
-				if claim.Driver == "" {
-					problems = append(problems, errors.New("kubevirt claimConfig requires driver"))
-				} else if len(validation.IsDNS1123Subdomain(claim.Driver)) > 0 {
+				if claim.Driver != "" && len(validation.IsDNS1123Subdomain(claim.Driver)) > 0 {
 					problems = append(problems, errors.New("kubevirt claimConfig driver must be a DNS subdomain"))
 				}
-				if len(claim.Parameters) == 0 {
-					problems = append(problems, errors.New("kubevirt claimConfig requires parameters"))
+				if claim.Driver == "" && len(claim.Parameters) > 0 {
+					problems = append(problems, errors.New("kubevirt claimConfig parameters require driver"))
+				}
+				if claim.Driver != "" && len(claim.Parameters) == 0 {
+					problems = append(problems, errors.New("kubevirt claimConfig driver requires parameters"))
 				}
 				for i, request := range claim.Requests {
 					if request == "" || len(validation.IsDNS1123Label(request)) > 0 {
 						problems = append(problems, fmt.Errorf("kubevirt claimConfig request[%d] must be a DNS label", i))
+					}
+				}
+				for name, value := range claim.Capacity {
+					if len(validation.IsQualifiedName(name)) > 0 {
+						problems = append(problems, fmt.Errorf("kubevirt claimConfig capacity key %q must be a qualified name", name))
+						continue
+					}
+					quantity, err := resource.ParseQuantity(fmt.Sprint(value))
+					if err != nil {
+						problems = append(problems, fmt.Errorf("kubevirt claimConfig capacity %q must be a resource quantity: %v", name, err))
+					} else if quantity.Sign() <= 0 {
+						problems = append(problems, fmt.Errorf("kubevirt claimConfig capacity %q must be greater than zero", name))
 					}
 				}
 			}
@@ -293,8 +331,11 @@ func (c *Config) Validate() error {
 				for _, d := range c.Drivers {
 					adapter, err := driver.Get(d.Name)
 					if err == nil {
-						if _, supported := driver.KubeVirtDeviceFor(adapter); !supported {
+						device, supported := driver.KubeVirtDeviceFor(adapter)
+						if !supported {
 							problems = append(problems, fmt.Errorf("kubevirt workload does not support driver %q", d.Name))
+						} else if !kubeVirtAttachmentCompatible(c.KubeVirt.Attachment, device.Attachment) {
+							problems = append(problems, fmt.Errorf("kubevirt attachment %q is incompatible with driver %q", c.KubeVirt.Attachment, d.Name))
 						}
 					}
 				}
@@ -523,6 +564,19 @@ func (c *Config) Validate() error {
 		problems = append(problems, errors.New("nvidiaOperator namespace must be a DNS label"))
 	}
 	return errors.Join(problems...)
+}
+
+func kubeVirtAttachmentCompatible(attachment, deviceAttachment string) bool {
+	switch attachment {
+	case KubeVirtAttachmentGPU, KubeVirtAttachmentHostDevice:
+		return deviceAttachment == KubeVirtAttachmentGPU
+	case KubeVirtAttachmentCPU:
+		return deviceAttachment == KubeVirtAttachmentCPU
+	case KubeVirtAttachmentNetwork:
+		return deviceAttachment == KubeVirtAttachmentNetwork
+	default:
+		return false
+	}
 }
 
 // ShouldCleanup defaults to true.

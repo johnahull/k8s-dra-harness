@@ -21,7 +21,10 @@ func init() { driver.Register(adapter{}) }
 func (adapter) Name() string        { return adapterName }
 func (adapter) DriverName() string  { return driverName }
 func (adapter) DeviceClass() string { return driverName }
-func (adapter) ChartDir() string    { return "deployments/helm/dra-driver-sriov" }
+func (adapter) KubeVirtDevice() driver.KubeVirtDevice {
+	return driver.KubeVirtDevice{Attachment: "network", Name: "sriov"}
+}
+func (adapter) ChartDir() string { return "deployments/helm/dra-driver-sriov" }
 func (adapter) Image(registry, tag string) string {
 	return registry + "/dra-driver-sriov:" + tag
 }

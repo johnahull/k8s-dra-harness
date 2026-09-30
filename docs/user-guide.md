@@ -48,10 +48,10 @@ resources.
 | Adapter | GPU hardware required? | Additional requirements |
 | --- | --- | --- |
 | `example` | No | A checkout of the Kubernetes DRA example driver and a pushable registry. |
-| `cpu` | No | CPU DRA driver, Node Resource Interface (NRI)/Container Device Interface (CDI) support, and compatible CPUManager configuration. |
+| `cpu` | No | CPU DRA driver, Node Resource Interface (NRI)/Container Device Interface (CDI) support, and compatible CPUManager configuration. KubeVirt CPU runs additionally need `CPUsWithDRA`, manual all-resource claim support, and Kubernetes consumable-capacity support (`DRAConsumableCapacity`). |
 | `amd` | Yes | AMD GPU nodes with a working `amdgpu` kernel driver and the AMD DRA driver. |
 | `nvidia` | Yes | NVIDIA GPU Operator prerequisites, NVIDIA driver/toolkit, and the standalone NVIDIA DRA driver. |
-| `sriov` | No GPU, but SR-IOV NICs are required | SR-IOV-capable nodes, the driver's CDI/runtime prerequisites, and a matching `SriovResourcePolicy`. Multus is needed for `MULTUS` mode; `STANDALONE` mode additionally needs NRI and a NetworkAttachmentDefinition configuration. |
+| `sriov` | No GPU, but SR-IOV NICs are required | SR-IOV-capable nodes, the driver's CDI/runtime prerequisites, and a matching `SriovResourcePolicy`. Multus is needed for `MULTUS` mode; `STANDALONE` mode additionally needs NRI and a NetworkAttachmentDefinition configuration. KubeVirt runs additionally need `NetworkDevicesWithDRA` and a pre-created NetworkAttachmentDefinition (NAD). |
 
 The `example` adapter is the recommended first validation because it advertises
 mock devices and does not require a GPU. NVIDIA support is experimental and
@@ -276,8 +276,11 @@ Examples:
 
 KubeVirt testing is a separate workload mode. The cluster must already have
 KubeVirt or OpenShift Virtualization installed, Kubernetes DRA enabled, and
-the matching `GPUsWithDRA` or `HostDevicesWithDRA` feature gate. The harness
-does not install KubeVirt or change its feature gates.
+the feature gate matching the attachment. GPU and HostDevice use
+`GPUsWithDRA` and `HostDevicesWithDRA`; SR-IOV uses `NetworkDevicesWithDRA`.
+CPU requires `CPUsWithDRA` and KubeVirt's manual all-resource claim support.
+The harness does not install KubeVirt or change its feature gates. The
+`example` adapter is intentionally pod-only.
 
 Use `workload: kubevirt` and a `kubevirt` block:
 
@@ -300,8 +303,38 @@ namespace. Guest verification uses `virtctl ssh`; the private key is copied
 to a protected temporary file and is not added to the workload object.
 
 Use [examples/kubevirt-nvidia.yaml](../examples/kubevirt-nvidia.yaml) as a
-starting point. `cpu` is pod-only. KubeVirt test plans are intentionally not
-combined with the regular DRA `testPlan`; run the KubeVirt workload and the
+starting point. CPU and SR-IOV use the same direct-VMI backend with different
+attachment fields:
+
+```yaml
+# CPU: grouped CPU DRA capacity
+kubevirt:
+  attachment: cpu
+  claimConfig:
+    capacity:
+      dra.cpu/cpu: "1"
+
+# SR-IOV: DRA-backed KubeVirt network
+kubevirt:
+  attachment: network
+  claimConfig:
+    requests: [device]
+    driver: sriovnetwork.k8snetworkplumbingwg.io
+    parameters:
+      apiVersion: sriovnetwork.k8snetworkplumbingwg.io/v1alpha1
+      kind: VfConfig
+      driver: vfio-pci
+      netAttachDefName: sriov-net
+      netAttachDefNamespace: dra-kubevirt
+```
+
+The CPU example requires a KubeVirt build containing `CPUsWithDRA` and manual
+all-resource claim support, plus Kubernetes consumable-capacity support
+(`DRAConsumableCapacity`). The SR-IOV claim's `VfConfig` must match a
+pre-created NetworkAttachmentDefinition and the installed SR-IOV policy. The
+harness creates the DRA claim and VMI, but does not create the NAD or change
+KubeVirt feature gates. KubeVirt test plans are intentionally not combined
+with the regular DRA `testPlan`; run the KubeVirt workload and the
 namespace-scoped DRA scenarios as separate configurations.
 
 ## DRA test plans
@@ -313,6 +346,23 @@ test suite.
 `profile` is a human-readable identifier for the plan; the explicit
 `scenarios` list controls what runs. Set `workloadImage` when the default test
 image is not available in the target registry.
+
+For regular pod claims, `selector` supplies the default CEL device selector and
+`claimConfig` supplies an optional opaque DRA device configuration. The latter
+is useful for drivers such as AMD's `VfioDeviceConfig` backend-policy tests:
+
+```yaml
+testPlan:
+  selector: 'device.attributes["gpu.amd.com"].type == "vfio"'
+  claimConfig:
+    requests: [device]
+    driver: gpu.amd.com
+    parameters:
+      apiVersion: gpu.resource.amd.com/v1alpha1
+      kind: VfioDeviceConfig
+      iommu:
+        backendPolicy: PreferIommuFD
+```
 
 The minimum structure is:
 

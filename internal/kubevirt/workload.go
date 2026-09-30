@@ -25,9 +25,10 @@ import (
 )
 
 const (
-	requestName   = "device"
-	checkTimeout  = 10 * time.Minute
-	launcherLabel = "vmi.kubevirt.io/id"
+	requestName    = "device"
+	cpuRequestName = "cpu"
+	checkTimeout   = 10 * time.Minute
+	launcherLabel  = "vmi.kubevirt.io/id"
 )
 
 // ErrUnsupported identifies a cluster that cannot run the selected KubeVirt
@@ -63,9 +64,9 @@ func (r *Runner) Preflight(ctx context.Context, attachment string) error {
 		return fmt.Errorf("%w: kubevirt.io/v1 does not expose namespaced virtualmachineinstances", ErrUnsupported)
 	}
 
-	gate := "GPUsWithDRA"
-	if attachment == runconfig.KubeVirtAttachmentHostDevice {
-		gate = "HostDevicesWithDRA"
+	gate, defaultEnabled := kubeVirtFeatureGate(attachment)
+	if gate == "" {
+		return fmt.Errorf("%w: unsupported KubeVirt attachment %q", ErrUnsupported, attachment)
 	}
 	list, err := r.clients.Dynamic.Resource(schema.GroupVersionResource{
 		Group: "kubevirt.io", Version: "v1", Resource: "kubevirts",
@@ -95,10 +96,10 @@ func (r *Runner) Preflight(ctx context.Context, attachment string) error {
 		if err != nil {
 			return fmt.Errorf("%w: reading KubeVirt version from %s/%s: %v", ErrUnsupported, item.GetNamespace(), item.GetName(), err)
 		}
-		if found && kubeVirtVersionAtLeast(version, 1, 9) {
+		if defaultEnabled && found && kubeVirtVersionAtLeast(version, 1, 9) {
 			// GPUsWithDRA and HostDevicesWithDRA are enabled by default in
 			// KubeVirt v1.9 and later. An empty featureGates list therefore
-			// does not mean that DRA is unavailable.
+			// does not mean that those DRA attachments are unavailable.
 			return nil
 		}
 	}
@@ -116,7 +117,7 @@ func (r *Runner) Run(ctx context.Context, namespace, id string, config *runconfi
 	if attachment == "" {
 		attachment = device.Attachment
 	}
-	if attachment != runconfig.KubeVirtAttachmentGPU && attachment != runconfig.KubeVirtAttachmentHostDevice {
+	if attachment != runconfig.KubeVirtAttachmentGPU && attachment != runconfig.KubeVirtAttachmentHostDevice && attachment != runconfig.KubeVirtAttachmentCPU && attachment != runconfig.KubeVirtAttachmentNetwork {
 		return fmt.Errorf("unsupported KubeVirt attachment %q", attachment)
 	}
 	guestDeviceName := config.DeviceName
@@ -208,21 +209,27 @@ func (r *Runner) Run(ctx context.Context, namespace, id string, config *runconfi
 }
 
 // BuildClaim returns the ResourceClaim consumed by a KubeVirt VMI. The
-// selector and opaque configuration are optional so the same backend can test
-// ordinary GPU claims and driver-specific VFIO claims.
+// selector, capacity, and opaque configuration are optional so the same
+// backend can test ordinary GPU claims, grouped CPU claims, and driver-specific
+// VFIO/SR-IOV claims.
 func BuildClaim(name, namespace string, config *runconfig.KubeVirt, driverName, deviceClass string, labels map[string]string) (*resourcev1.ResourceClaim, error) {
 	exact := &resourcev1.ExactDeviceRequest{DeviceClassName: deviceClass}
-	if config.Selector != "" {
+	if config != nil && config.Selector != "" {
 		exact.Selectors = []resourcev1.DeviceSelector{{CEL: &resourcev1.CELDeviceSelector{Expression: config.Selector}}}
+	}
+	if capacity, err := kubeVirtClaimCapacity(config, driverName, deviceClass); err != nil {
+		return nil, err
+	} else if len(capacity) > 0 {
+		exact.Capacity = &resourcev1.CapacityRequirements{Requests: capacity}
 	}
 	claim := &resourcev1.ResourceClaim{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, Labels: labels},
 		Spec: resourcev1.ResourceClaimSpec{Devices: resourcev1.DeviceClaim{Requests: []resourcev1.DeviceRequest{{
-			Name:    requestName,
+			Name:    kubeVirtRequestName(driverName, deviceClass),
 			Exactly: exact,
 		}}}},
 	}
-	if config.ClaimConfig == nil {
+	if config == nil || config.ClaimConfig == nil || (config.ClaimConfig.Driver == "" && len(config.ClaimConfig.Parameters) == 0) {
 		return claim, nil
 	}
 	parameters, err := json.Marshal(config.ClaimConfig.Parameters)
@@ -240,16 +247,32 @@ func BuildClaim(name, namespace string, config *runconfig.KubeVirt, driverName, 
 }
 
 // BuildVMI returns a direct-VMI object with the DRA claim wired into the
-// selected KubeVirt GPU or HostDevice field.
+// selected KubeVirt GPU, HostDevice, CPU, or SR-IOV network field.
 func BuildVMI(name, namespace string, config *runconfig.KubeVirt, attachment, deviceName, claimEntry, claimName string, labels map[string]string) *virtv1.VirtualMachineInstance {
-	claimRef := &virtv1.ClaimRequest{ClaimName: claimEntry, RequestName: requestName}
+	claimRef := &virtv1.ClaimRequest{ClaimName: claimEntry, RequestName: kubeVirtRequestNameForAttachment(attachment)}
 	devices := virtv1.Devices{
 		Disks: []virtv1.Disk{{Name: "rootdisk", DiskDevice: virtv1.DiskDevice{Disk: &virtv1.DiskTarget{Bus: virtv1.DiskBusVirtio}}}},
 	}
-	if attachment == runconfig.KubeVirtAttachmentHostDevice {
+	var networks []virtv1.Network
+	var annotations map[string]string
+	var cpu *virtv1.CPU
+	switch attachment {
+	case runconfig.KubeVirtAttachmentHostDevice:
 		devices.HostDevices = []virtv1.HostDevice{{Name: deviceName, ClaimRequest: claimRef}}
-	} else {
+	case runconfig.KubeVirtAttachmentGPU:
 		devices.GPUs = []virtv1.GPU{{Name: deviceName, ClaimRequest: claimRef}}
+	case runconfig.KubeVirtAttachmentCPU:
+		cpu = &virtv1.CPU{Cores: 1, DedicatedCPUPlacement: true}
+		annotations = map[string]string{"kubevirt.io/dra-manual-claim": claimEntry}
+	case runconfig.KubeVirtAttachmentNetwork:
+		networks = []virtv1.Network{
+			{Name: "default", NetworkSource: virtv1.NetworkSource{Pod: &virtv1.PodNetwork{}}},
+			{Name: deviceName, NetworkSource: virtv1.NetworkSource{ResourceClaim: claimRef}},
+		}
+		devices.Interfaces = []virtv1.Interface{
+			{Name: "default", InterfaceBindingMethod: virtv1.InterfaceBindingMethod{Masquerade: &virtv1.InterfaceMasquerade{}}},
+			{Name: deviceName, InterfaceBindingMethod: virtv1.InterfaceBindingMethod{SRIOV: &virtv1.InterfaceSRIOV{}}},
+		}
 	}
 	volumes := []virtv1.Volume{{Name: "rootdisk", VolumeSource: virtv1.VolumeSource{ContainerDisk: &virtv1.ContainerDiskSource{Image: config.Image}}}}
 	if config.CloudInitSecret != "" {
@@ -261,16 +284,69 @@ func BuildVMI(name, namespace string, config *runconfig.KubeVirt, attachment, de
 	}
 	return &virtv1.VirtualMachineInstance{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "kubevirt.io/v1", Kind: "VirtualMachineInstance"},
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, Labels: labels},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, Labels: labels, Annotations: annotations},
 		Spec: virtv1.VirtualMachineInstanceSpec{
 			Domain: virtv1.DomainSpec{
 				Resources: virtv1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceMemory: resourceQuantity("1Gi")}},
+				CPU:       cpu,
 				Devices:   devices,
 			},
 			Volumes:        volumes,
+			Networks:       networks,
 			ResourceClaims: []virtv1.VirtualMachineInstanceResourceClaim{{Name: claimEntry, ResourceClaimName: stringPtr(claimName)}},
 		},
 	}
+}
+
+func kubeVirtFeatureGate(attachment string) (string, bool) {
+	switch attachment {
+	case runconfig.KubeVirtAttachmentGPU:
+		return "GPUsWithDRA", true
+	case runconfig.KubeVirtAttachmentHostDevice:
+		return "HostDevicesWithDRA", true
+	case runconfig.KubeVirtAttachmentCPU:
+		return "CPUsWithDRA", false
+	case runconfig.KubeVirtAttachmentNetwork:
+		return "NetworkDevicesWithDRA", false
+	default:
+		return "", false
+	}
+}
+
+func kubeVirtRequestName(driverName, deviceClass string) string {
+	if driverName == "cpu" || deviceClass == "dra.cpu" {
+		return cpuRequestName
+	}
+	return "device"
+}
+
+func kubeVirtRequestNameForAttachment(attachment string) string {
+	if attachment == runconfig.KubeVirtAttachmentCPU {
+		return cpuRequestName
+	}
+	return "device"
+}
+
+func kubeVirtClaimCapacity(config *runconfig.KubeVirt, driverName, deviceClass string) (map[resourcev1.QualifiedName]resource.Quantity, error) {
+	capacity := map[resourcev1.QualifiedName]resource.Quantity{}
+	if config != nil && config.ClaimConfig != nil {
+		for name, value := range config.ClaimConfig.Capacity {
+			quantity, err := resource.ParseQuantity(fmt.Sprint(value))
+			if err != nil {
+				return nil, fmt.Errorf("parsing KubeVirt claim capacity %q: %w", name, err)
+			}
+			if quantity.Sign() <= 0 {
+				return nil, fmt.Errorf("KubeVirt claim capacity %q must be greater than zero", name)
+			}
+			capacity[resourcev1.QualifiedName(name)] = quantity
+		}
+	}
+	if driverName == "cpu" || deviceClass == "dra.cpu" {
+		if len(capacity) == 0 {
+			capacity[resourcev1.QualifiedName("dra.cpu/cpu")] = resource.MustParse("1")
+		}
+	}
+	return capacity, nil
 }
 
 func (r *Runner) waitReady(ctx context.Context, namespace, vmiName, claimName string) error {

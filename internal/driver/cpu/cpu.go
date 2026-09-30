@@ -19,7 +19,10 @@ func init() { driver.Register(adapter{}) }
 func (adapter) Name() string        { return "cpu" }
 func (adapter) DriverName() string  { return "dra.cpu" }
 func (adapter) DeviceClass() string { return "dra.cpu" }
-func (adapter) ChartDir() string    { return "deployment/helm/dra-driver-cpu" }
+func (adapter) KubeVirtDevice() driver.KubeVirtDevice {
+	return driver.KubeVirtDevice{Attachment: "cpu", Name: "cpu"}
+}
+func (adapter) ChartDir() string { return "deployment/helm/dra-driver-cpu" }
 func (adapter) Image(registry, tag string) string {
 	return registry + "/dra-driver-cpu/dra-driver-cpu:" + tag
 }

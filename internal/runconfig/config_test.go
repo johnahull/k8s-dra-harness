@@ -194,14 +194,58 @@ func TestKubeVirtConfig(t *testing.T) {
 	}
 }
 
-func TestKubeVirtRejectsCPUDriver(t *testing.T) {
+func TestKubeVirtCPUDriver(t *testing.T) {
 	c := Config{
 		Workload: WorkloadKubeVirt,
 		KubeVirt: &KubeVirt{Image: "quay.io/containerdisks/fedora:latest"},
 		Drivers:  []Driver{{Name: "cpu", Image: "quay.io/example/cpu:dev", Chart: "oci://example/cpu"}},
 	}
-	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), `kubevirt workload does not support driver "cpu"`) {
-		t.Fatalf("Validate() error = %v, want KubeVirt CPU rejection", err)
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if c.KubeVirt.Attachment != KubeVirtAttachmentCPU {
+		t.Fatalf("attachment = %q, want %q", c.KubeVirt.Attachment, KubeVirtAttachmentCPU)
+	}
+
+	c.KubeVirt.ClaimConfig = &KubeVirtClaim{Capacity: map[string]any{"dra.cpu/cpu": "2"}}
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	bad := c
+	bad.KubeVirt.ClaimConfig = &KubeVirtClaim{Capacity: map[string]any{"not a quantity": "two"}}
+	if err := bad.Validate(); err == nil || !strings.Contains(err.Error(), "capacity") {
+		t.Fatalf("Validate() error = %v, want capacity validation", err)
+	}
+}
+
+func TestKubeVirtSRIOVDriver(t *testing.T) {
+	c := Config{
+		Workload: WorkloadKubeVirt,
+		KubeVirt: &KubeVirt{Image: "quay.io/containerdisks/fedora:latest", ClaimConfig: &KubeVirtClaim{
+			Driver: "sriovnetwork.k8snetworkplumbingwg.io",
+			Parameters: map[string]any{
+				"apiVersion": "sriovnetwork.k8snetworkplumbingwg.io/v1alpha1",
+				"kind":       "VfConfig",
+			},
+		}},
+		Drivers: []Driver{{Name: "sriov", Image: "quay.io/example/sriov:dev", Chart: "oci://example/sriov"}},
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if c.KubeVirt.Attachment != KubeVirtAttachmentNetwork {
+		t.Fatalf("attachment = %q, want %q", c.KubeVirt.Attachment, KubeVirtAttachmentNetwork)
+	}
+}
+
+func TestKubeVirtRejectsExampleDriver(t *testing.T) {
+	c := Config{
+		Workload: WorkloadKubeVirt,
+		KubeVirt: &KubeVirt{Image: "quay.io/containerdisks/fedora:latest"},
+		Drivers:  []Driver{{Name: "example", Image: "quay.io/example/example:dev", Chart: "oci://example/example"}},
+	}
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), `kubevirt workload does not support driver "example"`) {
+		t.Fatalf("Validate() error = %v, want KubeVirt example rejection", err)
 	}
 }
 

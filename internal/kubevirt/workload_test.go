@@ -8,8 +8,12 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
+const (
+	testClaimName = "claim"
+)
+
 func TestBuildVMIGPU(t *testing.T) {
-	vmi := BuildVMI("test-vmi", "test", &runconfig.KubeVirt{Image: "example/image"}, "gpu", "nvidia-gpu", "nvidia", "claim", map[string]string{"test": "true"})
+	vmi := BuildVMI("test-vmi", "test", &runconfig.KubeVirt{Image: "example/image"}, "gpu", "nvidia-gpu", "nvidia", testClaimName, map[string]string{"test": "true"})
 	if got := len(vmi.Spec.Domain.Devices.GPUs); got != 1 {
 		t.Fatalf("GPU count = %d, want 1", got)
 	}
@@ -17,7 +21,7 @@ func TestBuildVMIGPU(t *testing.T) {
 	if gpu.Name != "nvidia-gpu" || gpu.ClaimRequest == nil || gpu.ClaimName != "nvidia" || gpu.RequestName != requestName {
 		t.Fatalf("unexpected GPU mapping: %+v", gpu)
 	}
-	if len(vmi.Spec.Domain.Devices.HostDevices) != 0 || len(vmi.Spec.ResourceClaims) != 1 || vmi.Spec.ResourceClaims[0].ResourceClaimName == nil || *vmi.Spec.ResourceClaims[0].ResourceClaimName != "claim" {
+	if len(vmi.Spec.Domain.Devices.HostDevices) != 0 || len(vmi.Spec.ResourceClaims) != 1 || vmi.Spec.ResourceClaims[0].ResourceClaimName == nil || *vmi.Spec.ResourceClaims[0].ResourceClaimName != testClaimName {
 		t.Fatalf("unexpected VMI claims: %+v", vmi.Spec.ResourceClaims)
 	}
 }
@@ -35,8 +39,37 @@ func TestBuildVMIHostDeviceAndCloudInit(t *testing.T) {
 	}
 }
 
+func TestBuildVMICPU(t *testing.T) {
+	vmi := BuildVMI("test-vmi", "test", &runconfig.KubeVirt{Image: "example/image"}, "cpu", cpuRequestName, testClaimName, "claim-object", nil)
+	if vmi.Spec.Domain.CPU == nil || vmi.Spec.Domain.CPU.Cores != 1 || !vmi.Spec.Domain.CPU.DedicatedCPUPlacement {
+		t.Fatalf("unexpected CPU configuration: %+v", vmi.Spec.Domain.CPU)
+	}
+	if len(vmi.Spec.Domain.Devices.GPUs) != 0 || len(vmi.Spec.Domain.Devices.HostDevices) != 0 || len(vmi.Spec.Networks) != 0 {
+		t.Fatalf("CPU VMI has unrelated device wiring: devices=%+v networks=%+v", vmi.Spec.Domain.Devices, vmi.Spec.Networks)
+	}
+	if got := vmi.Annotations["kubevirt.io/dra-manual-claim"]; got != testClaimName {
+		t.Fatalf("manual claim annotation = %q, want claim", got)
+	}
+	if got := vmi.Spec.ResourceClaims[0].ResourceClaimName; got == nil || *got != "claim-object" {
+		t.Fatalf("unexpected CPU resource claim: %+v", vmi.Spec.ResourceClaims)
+	}
+}
+
+func TestBuildVMISRIOVNetwork(t *testing.T) {
+	vmi := BuildVMI("test-vmi", "test", &runconfig.KubeVirt{Image: "example/image"}, "network", "sriov", testClaimName, "claim-object", nil)
+	if len(vmi.Spec.Networks) != 2 || len(vmi.Spec.Domain.Devices.Interfaces) != 2 {
+		t.Fatalf("unexpected SR-IOV network wiring: networks=%+v interfaces=%+v", vmi.Spec.Networks, vmi.Spec.Domain.Devices.Interfaces)
+	}
+	if vmi.Spec.Networks[1].ResourceClaim == nil || vmi.Spec.Networks[1].ResourceClaim.ClaimName != testClaimName || vmi.Spec.Networks[1].ResourceClaim.RequestName != requestName {
+		t.Fatalf("unexpected SR-IOV network claim: %+v", vmi.Spec.Networks[1])
+	}
+	if vmi.Spec.Domain.Devices.Interfaces[1].SRIOV == nil {
+		t.Fatalf("SR-IOV interface binding is missing: %+v", vmi.Spec.Domain.Devices.Interfaces[1])
+	}
+}
+
 func TestBuildVFIOClaim(t *testing.T) {
-	claim, err := BuildClaim("claim", "test", &runconfig.KubeVirt{
+	claim, err := BuildClaim(testClaimName, "test", &runconfig.KubeVirt{
 		Selector: `device.attributes["gpu.amd.com"].type == "vfio"`,
 		ClaimConfig: &runconfig.KubeVirtClaim{
 			Driver: "gpu.amd.com",
@@ -67,6 +100,46 @@ func TestBuildVFIOClaim(t *testing.T) {
 	}
 	if parameters["kind"] != "VfioDeviceConfig" {
 		t.Fatalf("unexpected opaque parameters: %v", parameters)
+	}
+}
+
+func TestBuildCPUClaim(t *testing.T) {
+	claim, err := BuildClaim(testClaimName, "test", &runconfig.KubeVirt{}, cpuRequestName, "dra.cpu", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := claim.Spec.Devices.Requests[0]
+	if request.Name != cpuRequestName || request.Exactly.Capacity == nil {
+		t.Fatalf("unexpected CPU request: %+v", request)
+	}
+	quantity := request.Exactly.Capacity.Requests["dra.cpu/cpu"]
+	if got := quantity.String(); got != "1" {
+		t.Fatalf("CPU capacity = %q, want 1", got)
+	}
+	if len(claim.Spec.Devices.Config) != 0 {
+		t.Fatalf("unexpected CPU opaque config: %+v", claim.Spec.Devices.Config)
+	}
+}
+
+func TestKubeVirtFeatureGate(t *testing.T) {
+	tests := []struct {
+		attachment string
+		gate       string
+		defaultOn  bool
+	}{
+		{attachment: runconfig.KubeVirtAttachmentGPU, gate: "GPUsWithDRA", defaultOn: true},
+		{attachment: runconfig.KubeVirtAttachmentHostDevice, gate: "HostDevicesWithDRA", defaultOn: true},
+		{attachment: runconfig.KubeVirtAttachmentCPU, gate: "CPUsWithDRA"},
+		{attachment: runconfig.KubeVirtAttachmentNetwork, gate: "NetworkDevicesWithDRA"},
+	}
+	for _, test := range tests {
+		gate, defaultOn := kubeVirtFeatureGate(test.attachment)
+		if gate != test.gate || defaultOn != test.defaultOn {
+			t.Errorf("kubeVirtFeatureGate(%q) = %q, %t; want %q, %t", test.attachment, gate, defaultOn, test.gate, test.defaultOn)
+		}
+	}
+	if gate, defaultOn := kubeVirtFeatureGate("unsupported"); gate != "" || defaultOn {
+		t.Fatalf("unsupported attachment mapped to gate %q, defaultOn=%t", gate, defaultOn)
 	}
 }
 

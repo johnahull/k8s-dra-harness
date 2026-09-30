@@ -13,11 +13,14 @@ An adapter owns only driver-specific behavior:
 - `Values` merges the image and driver-specific Helm values.
 - `Workload` returns a container that proves a claimed device reached the pod.
 
-GPU adapters that can be exercised inside a KubeVirt guest may additionally
-implement `KubeVirtDevice() driver.KubeVirtDevice`. Set the optional device
-name used as the guest GPU/HostDevice alias. The run configuration selects the
-`gpu` or `hostDevice` attachment. Adapters without this method remain
-pod-only.
+Adapters that can be exercised through a KubeVirt DRA attachment may
+additionally implement `KubeVirtDevice() driver.KubeVirtDevice`. Set the
+attachment mode (`gpu`, `hostDevice`, `cpu`, or `network`) and the optional
+device name used as the guest alias. GPU adapters use the GPU or HostDevice
+fields; CPU adapters use the CPU-DRA manual-claim path; SR-IOV adapters use a
+DRA-backed network and SR-IOV interface. The run configuration selects the
+attachment, and adapters without this method remain pod-only. The `example`
+adapter deliberately does not implement it.
 
 The generic harness owns cluster clients, Helm releases, namespaces, DRA
 claims, readiness checks, and cleanup. An adapter should not create Kubernetes

@@ -43,10 +43,10 @@ plugins.
 | Adapter | Purpose | Hardware | Workloads | Status |
 | --- | --- | --- | --- | --- |
 | `example` | Kubernetes DRA mock-device example driver | No GPU required | Pod | Recommended first run |
-| `cpu` | CPU DRA driver | CPUManager plus NRI/CDI support | Pod | Hardware/runtime dependent |
+| `cpu` | CPU DRA driver | CPUManager plus NRI/CDI support | Pod or KubeVirt (feature-gated) | Hardware/runtime dependent |
 | `amd` | AMD GPU DRA driver | AMD GPU and `amdgpu` | Pod or KubeVirt | Hardware dependent |
 | `nvidia` | NVIDIA GPU DRA driver | NVIDIA GPU, driver, and toolkit | Pod or KubeVirt | Experimental |
-| `sriov` | SR-IOV VF DRA driver | SR-IOV-capable NIC, CDI, and driver runtime prerequisites | Pod | Hardware/network dependent |
+| `sriov` | SR-IOV VF DRA driver | SR-IOV-capable NIC, CDI, and driver runtime prerequisites | Pod or KubeVirt | Hardware/network dependent |
 
 The AMD and NVIDIA GPU Operator configurations can also be used without a DRA
 driver for operator/device-plugin validation. Combined multi-driver workloads
@@ -85,7 +85,9 @@ requirements depend on the adapter:
 - `example`: a checkout of the Kubernetes DRA example driver and a pushable
   registry;
 - `cpu`: a CPU DRA driver with compatible CPUManager, Node Resource Interface
-  (NRI), and Container Device Interface (CDI) support;
+  (NRI), and Container Device Interface (CDI) support. KubeVirt CPU runs also
+  require a KubeVirt build with `CPUsWithDRA` and manual all-resource claim
+  support, plus Kubernetes consumable-capacity support (`DRAConsumableCapacity`);
 - `amd`: AMD GPU nodes with a working `amdgpu` kernel driver and AMD DRA
   driver; and
 - `nvidia`: NVIDIA GPU nodes with a working driver and toolkit, plus the
@@ -94,7 +96,9 @@ requirements depend on the adapter:
 - `sriov`: SR-IOV-capable nodes, the SR-IOV DRA driver's CDI/runtime
   prerequisites, and a matching `SriovResourcePolicy`. Multus is needed for
   the driver's `MULTUS` mode; `STANDALONE` mode additionally needs NRI and a
-  NetworkAttachmentDefinition configuration.
+  NetworkAttachmentDefinition configuration. KubeVirt SR-IOV runs require
+  the `NetworkDevicesWithDRA` feature gate and a pre-created
+  NetworkAttachmentDefinition (NAD) referenced by the claim's `VfConfig`.
 
 Confirm the kubeconfig context before using a mode that creates resources:
 
@@ -189,9 +193,11 @@ Docker.
 ### Run KubeVirt or OpenShift Virtualization checks
 
 The cluster must already have KubeVirt or OpenShift Virtualization, Kubernetes
-DRA, and the relevant `GPUsWithDRA` or `HostDevicesWithDRA` feature gate. The
+DRA, and the feature gate for the selected attachment. GPU and HostDevice use
+`GPUsWithDRA` and `HostDevicesWithDRA`; SR-IOV uses `NetworkDevicesWithDRA`.
+CPU uses `CPUsWithDRA` plus KubeVirt's manual all-resource claim support. The
 harness creates a direct VMI and ResourceClaim; it does not install KubeVirt or
-change feature gates.
+change feature gates. The `example` adapter remains pod-only.
 
 Start with [examples/kubevirt-nvidia.yaml](examples/kubevirt-nvidia.yaml).
 KubeVirt guest verification additionally needs a cloud-init Secret containing
@@ -230,9 +236,18 @@ drivers:
     namespace: dra-pr122-vfio-lifecycle
 ```
 
-KubeVirt workloads currently support AMD and NVIDIA adapters. CPU remains
-pod-only, and KubeVirt workloads cannot be combined with the regular DRA
-`testPlan` in the same configuration.
+KubeVirt workloads support AMD and NVIDIA GPU/HostDevice attachments, CPU DRA
+claims, and SR-IOV DRA network attachments. CPU support depends on a KubeVirt
+build that includes `CPUsWithDRA` and manual all-resource claim support; a
+stock KubeVirt build without that feature is rejected during preflight. The
+`example` adapter is intentionally pod-only. KubeVirt workloads cannot be
+combined with the regular DRA `testPlan` in the same configuration.
+
+For CPU, select `attachment: cpu`; the harness requests grouped CPU capacity
+(`dra.cpu/cpu`) and adds KubeVirt's manual-claim annotation. For SR-IOV,
+select `attachment: network`; the harness adds a DRA-backed KubeVirt network
+with an SR-IOV interface. See the adapter-specific configuration in the
+[user guide](docs/user-guide.md#kubevirt-and-openshift-virtualization).
 
 ### Run reusable DRA test plans
 
@@ -281,6 +296,9 @@ Other frequently used fields include:
   If it is set while the driver namespace is omitted, it also selects that
   namespace for the driver; otherwise it must match the configured driver namespace;
   and
+- `testPlan.selector` supplies a default CEL selector for regular pod claims,
+  while `testPlan.claimConfig` adds optional opaque device configuration to
+  those claims; and
 - `testPlan`: reusable DRA allocation scenarios.
 
 Relative `sourcePath`, `scriptsDir`, and `evidenceDir` values are resolved
