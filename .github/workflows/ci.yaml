@@ -31,6 +31,9 @@ jobs:
           set -euo pipefail
           bash -n scripts/*.sh
 
+      - name: Run lint and vet
+        run: make verify
+
       - name: Run unit tests
         run: go test ./...
 

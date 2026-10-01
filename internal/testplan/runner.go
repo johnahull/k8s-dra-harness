@@ -26,6 +26,7 @@ const (
 	defaultWorkloadImage = "registry.k8s.io/e2e-test-images/busybox:1.29-4"
 	scenarioTimeout      = 3 * time.Minute
 	pendingTimeout       = 30 * time.Second
+	amdComputeSelector   = "device.attributes[\"gpu.amd.com\"].type == 'amdgpu'"
 )
 
 // DriverTarget identifies one installed or pre-existing DRA driver for a
@@ -299,7 +300,7 @@ func (r *Runner) siblingExclusionOrder(ctx context.Context, reverse bool) error 
 		return err
 	}
 	firstType := "compute"
-	firstSelector := "device.attributes[\"gpu.amd.com\"].type == 'amdgpu'"
+	firstSelector := amdComputeSelector
 	secondType := "vfio"
 	secondSelector := "device.attributes[\"gpu.amd.com\"].type == 'vfio'"
 	if reverse {
@@ -340,7 +341,7 @@ func (r *Runner) siblingExclusionOrder(ctx context.Context, reverse bool) error 
 
 func (r *Runner) alternateDevice(ctx context.Context) error {
 	const class = "gpu.amd.com"
-	compute := "device.attributes[\"gpu.amd.com\"].type == 'amdgpu'"
+	compute := amdComputeSelector
 	vfio := "device.attributes[\"gpu.amd.com\"].type == 'vfio'"
 	firstClaim, firstPod, err := r.createSelectedConsumer(ctx, r.name("alternate-compute-claim"), r.name("alternate-compute-pod"), class, compute)
 	if err != nil {
@@ -392,7 +393,7 @@ func (r *Runner) release(ctx context.Context) error {
 
 func (r *Runner) releaseOrders(ctx context.Context) error {
 	const class = "gpu.amd.com"
-	compute := "device.attributes[\"gpu.amd.com\"].type == 'amdgpu'"
+	compute := amdComputeSelector
 	for order := 0; order < 2; order++ {
 		firstClaim, firstPod, err := r.createSelectedConsumer(ctx, r.name(fmt.Sprintf("release-order-%d-first-claim", order)), r.name(fmt.Sprintf("release-order-%d-first-pod", order)), class, compute)
 		if err != nil {
@@ -517,7 +518,7 @@ func (r *Runner) restart(ctx context.Context, targets []DriverTarget) error {
 
 func (r *Runner) restartActive(ctx context.Context, targets []DriverTarget) error {
 	const class = "gpu.amd.com"
-	claim, pod, err := r.createSelectedConsumer(ctx, r.name("restart-active-claim"), r.name("restart-active-pod"), class, "device.attributes[\"gpu.amd.com\"].type == 'amdgpu'")
+	claim, pod, err := r.createSelectedConsumer(ctx, r.name("restart-active-claim"), r.name("restart-active-pod"), class, amdComputeSelector)
 	if err != nil {
 		return err
 	}
