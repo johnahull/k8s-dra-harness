@@ -302,6 +302,13 @@ The harness creates a direct VMI and DRA ResourceClaim in the selected
 namespace. Guest verification uses `virtctl ssh`; the private key is copied
 to a protected temporary file and is not added to the workload object.
 
+Set `kubevirt.deviceCount` to attach multiple GPUs or HostDevices to one VMI.
+The harness creates one ResourceClaim with deterministic requests
+(`device-0`, `device-1`, and so on), then wires each request to its matching
+KubeVirt device entry. The default is one device; multi-device mode is not
+available for CPU or network attachments. See
+[examples/existing-amd-kubevirt-gim-two-gpu.yaml](../examples/existing-amd-kubevirt-gim-two-gpu.yaml).
+
 Use [examples/kubevirt-nvidia.yaml](../examples/kubevirt-nvidia.yaml) as a
 starting point. CPU and SR-IOV use the same direct-VMI backend with different
 attachment fields:

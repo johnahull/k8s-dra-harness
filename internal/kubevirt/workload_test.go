@@ -2,6 +2,7 @@ package kubevirt
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/johnahull/k8s-dra-harness/internal/runconfig"
@@ -13,7 +14,10 @@ const (
 )
 
 func TestBuildVMIGPU(t *testing.T) {
-	vmi := BuildVMI("test-vmi", "test", &runconfig.KubeVirt{Image: "example/image"}, "gpu", "nvidia-gpu", "nvidia", testClaimName, map[string]string{"test": "true"})
+	vmi, err := BuildVMI("test-vmi", "test", &runconfig.KubeVirt{Image: "example/image"}, "gpu", "nvidia-gpu", "nvidia", testClaimName, map[string]string{"test": "true"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got := len(vmi.Spec.Domain.Devices.GPUs); got != 1 {
 		t.Fatalf("GPU count = %d, want 1", got)
 	}
@@ -26,8 +30,48 @@ func TestBuildVMIGPU(t *testing.T) {
 	}
 }
 
+func TestBuildVMIMultiGPU(t *testing.T) {
+	vmi, err := BuildVMI("test-vmi", "test", &runconfig.KubeVirt{Image: "example/image", DeviceCount: 2}, "gpu", "amd", testClaimName, "claim-object", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(vmi.Spec.Domain.Devices.GPUs); got != 2 {
+		t.Fatalf("GPU count = %d, want 2", got)
+	}
+	for i, gpu := range vmi.Spec.Domain.Devices.GPUs {
+		wantName := fmt.Sprintf("amd-%d", i)
+		wantRequest := fmt.Sprintf("device-%d", i)
+		if gpu.Name != wantName || gpu.ClaimRequest == nil || gpu.ClaimName != testClaimName || gpu.RequestName != wantRequest {
+			t.Fatalf("GPU[%d] mapping = %+v, want name %q and request %q", i, gpu, wantName, wantRequest)
+		}
+	}
+	if len(vmi.Spec.ResourceClaims) != 1 || vmi.Spec.ResourceClaims[0].ResourceClaimName == nil || *vmi.Spec.ResourceClaims[0].ResourceClaimName != "claim-object" {
+		t.Fatalf("unexpected VMI claims: %+v", vmi.Spec.ResourceClaims)
+	}
+}
+
+func TestBuildVMIMultiHostDevice(t *testing.T) {
+	vmi, err := BuildVMI("test-vmi", "test", &runconfig.KubeVirt{Image: "example/image", DeviceCount: 2}, "hostDevice", "amd", testClaimName, "claim-object", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(vmi.Spec.Domain.Devices.HostDevices); got != 2 {
+		t.Fatalf("HostDevice count = %d, want 2", got)
+	}
+	for i, hostDevice := range vmi.Spec.Domain.Devices.HostDevices {
+		wantName := fmt.Sprintf("amd-%d", i)
+		wantRequest := fmt.Sprintf("device-%d", i)
+		if hostDevice.Name != wantName || hostDevice.ClaimRequest == nil || hostDevice.ClaimName != testClaimName || hostDevice.RequestName != wantRequest {
+			t.Fatalf("HostDevice[%d] mapping = %+v, want name %q and request %q", i, hostDevice, wantName, wantRequest)
+		}
+	}
+}
+
 func TestBuildVMIHostDeviceAndCloudInit(t *testing.T) {
-	vmi := BuildVMI("test-vmi", "test", &runconfig.KubeVirt{Image: "example/image", CloudInitSecret: "guest-init"}, "hostDevice", "amd-gpu", "amd", "claim", nil)
+	vmi, err := BuildVMI("test-vmi", "test", &runconfig.KubeVirt{Image: "example/image", CloudInitSecret: "guest-init"}, "hostDevice", "amd-gpu", "amd", "claim", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(vmi.Spec.Domain.Devices.HostDevices) != 1 || vmi.Spec.Domain.Devices.HostDevices[0].ClaimRequest == nil {
 		t.Fatalf("unexpected HostDevice mapping: %+v", vmi.Spec.Domain.Devices.HostDevices)
 	}
@@ -40,7 +84,10 @@ func TestBuildVMIHostDeviceAndCloudInit(t *testing.T) {
 }
 
 func TestBuildVMICPU(t *testing.T) {
-	vmi := BuildVMI("test-vmi", "test", &runconfig.KubeVirt{Image: "example/image"}, "cpu", cpuRequestName, testClaimName, "claim-object", nil)
+	vmi, err := BuildVMI("test-vmi", "test", &runconfig.KubeVirt{Image: "example/image"}, "cpu", cpuRequestName, testClaimName, "claim-object", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if vmi.Spec.Domain.CPU == nil || vmi.Spec.Domain.CPU.Cores != 1 || !vmi.Spec.Domain.CPU.DedicatedCPUPlacement {
 		t.Fatalf("unexpected CPU configuration: %+v", vmi.Spec.Domain.CPU)
 	}
@@ -56,7 +103,10 @@ func TestBuildVMICPU(t *testing.T) {
 }
 
 func TestBuildVMISRIOVNetwork(t *testing.T) {
-	vmi := BuildVMI("test-vmi", "test", &runconfig.KubeVirt{Image: "example/image"}, "network", "sriov", testClaimName, "claim-object", nil)
+	vmi, err := BuildVMI("test-vmi", "test", &runconfig.KubeVirt{Image: "example/image"}, "network", "sriov", testClaimName, "claim-object", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(vmi.Spec.Networks) != 2 || len(vmi.Spec.Domain.Devices.Interfaces) != 2 {
 		t.Fatalf("unexpected SR-IOV network wiring: networks=%+v interfaces=%+v", vmi.Spec.Networks, vmi.Spec.Domain.Devices.Interfaces)
 	}
@@ -65,6 +115,28 @@ func TestBuildVMISRIOVNetwork(t *testing.T) {
 	}
 	if vmi.Spec.Domain.Devices.Interfaces[1].SRIOV == nil {
 		t.Fatalf("SR-IOV interface binding is missing: %+v", vmi.Spec.Domain.Devices.Interfaces[1])
+	}
+}
+
+func TestBuildClaimMultiDevice(t *testing.T) {
+	claim, err := BuildClaim(testClaimName, "test", &runconfig.KubeVirt{DeviceCount: 2, Selector: `device.attributes["gpu.amd.com"].type == "vfio"`}, "amd", "gpu.amd.com", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(claim.Spec.Devices.Requests); got != 2 {
+		t.Fatalf("request count = %d, want 2", got)
+	}
+	for i, request := range claim.Spec.Devices.Requests {
+		want := fmt.Sprintf("device-%d", i)
+		if request.Name != want || request.Exactly == nil || len(request.Exactly.Selectors) != 1 {
+			t.Fatalf("request[%d] = %+v, want name %q and selector", i, request, want)
+		}
+	}
+}
+
+func TestBuildVMIRejectsMultiDeviceCPU(t *testing.T) {
+	if _, err := BuildVMI("test-vmi", "test", &runconfig.KubeVirt{Image: "example/image", DeviceCount: 2}, "cpu", cpuRequestName, testClaimName, "claim-object", nil); err == nil {
+		t.Fatal("BuildVMI accepted multi-device CPU workload")
 	}
 }
 

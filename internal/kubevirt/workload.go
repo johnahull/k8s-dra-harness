@@ -120,6 +120,9 @@ func (r *Runner) Run(ctx context.Context, namespace, id string, config *runconfi
 	if attachment != runconfig.KubeVirtAttachmentGPU && attachment != runconfig.KubeVirtAttachmentHostDevice && attachment != runconfig.KubeVirtAttachmentCPU && attachment != runconfig.KubeVirtAttachmentNetwork {
 		return fmt.Errorf("unsupported KubeVirt attachment %q", attachment)
 	}
+	if err := validateDeviceCount(config, attachment); err != nil {
+		return err
+	}
 	guestDeviceName := config.DeviceName
 	if guestDeviceName == "" {
 		guestDeviceName = device.Name
@@ -181,7 +184,10 @@ func (r *Runner) Run(ctx context.Context, namespace, id string, config *runconfi
 		return errors.Join(problems...)
 	}
 
-	vmi := BuildVMI(vmiName, namespace, config, attachment, guestDeviceName, driverName, claimName, labels)
+	vmi, err := BuildVMI(vmiName, namespace, config, attachment, guestDeviceName, driverName, claimName, labels)
+	if err != nil {
+		return errors.Join(err, cleanup())
+	}
 	if _, err := r.clients.Kubevirt.KubevirtV1().VirtualMachineInstances(namespace).Create(ctx, vmi, metav1.CreateOptions{}); err != nil {
 		return errors.Join(fmt.Errorf("creating KubeVirt VMI: %w", err), cleanup())
 	}
@@ -213,6 +219,13 @@ func (r *Runner) Run(ctx context.Context, namespace, id string, config *runconfi
 // backend can test ordinary GPU claims, grouped CPU claims, and driver-specific
 // VFIO/SR-IOV claims.
 func BuildClaim(name, namespace string, config *runconfig.KubeVirt, driverName, deviceClass string, labels map[string]string) (*resourcev1.ResourceClaim, error) {
+	count, err := kubeVirtDeviceCount(config)
+	if err != nil {
+		return nil, err
+	}
+	if count > 1 && (driverName == "cpu" || deviceClass == "dra.cpu") {
+		return nil, fmt.Errorf("kubevirt deviceCount greater than one is not supported for CPU claims")
+	}
 	exact := &resourcev1.ExactDeviceRequest{DeviceClassName: deviceClass}
 	if config != nil && config.Selector != "" {
 		exact.Selectors = []resourcev1.DeviceSelector{{CEL: &resourcev1.CELDeviceSelector{Expression: config.Selector}}}
@@ -222,12 +235,13 @@ func BuildClaim(name, namespace string, config *runconfig.KubeVirt, driverName, 
 	} else if len(capacity) > 0 {
 		exact.Capacity = &resourcev1.CapacityRequirements{Requests: capacity}
 	}
+	requests := make([]resourcev1.DeviceRequest, count)
+	for i, name := range kubeVirtRequestNames(driverName, deviceClass, count) {
+		requests[i] = resourcev1.DeviceRequest{Name: name, Exactly: exact}
+	}
 	claim := &resourcev1.ResourceClaim{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, Labels: labels},
-		Spec: resourcev1.ResourceClaimSpec{Devices: resourcev1.DeviceClaim{Requests: []resourcev1.DeviceRequest{{
-			Name:    kubeVirtRequestName(driverName, deviceClass),
-			Exactly: exact,
-		}}}},
+		Spec:       resourcev1.ResourceClaimSpec{Devices: resourcev1.DeviceClaim{Requests: requests}},
 	}
 	if config == nil || config.ClaimConfig == nil || (config.ClaimConfig.Driver == "" && len(config.ClaimConfig.Parameters) == 0) {
 		return claim, nil
@@ -248,8 +262,14 @@ func BuildClaim(name, namespace string, config *runconfig.KubeVirt, driverName, 
 
 // BuildVMI returns a direct-VMI object with the DRA claim wired into the
 // selected KubeVirt GPU, HostDevice, CPU, or SR-IOV network field.
-func BuildVMI(name, namespace string, config *runconfig.KubeVirt, attachment, deviceName, claimEntry, claimName string, labels map[string]string) *virtv1.VirtualMachineInstance {
-	claimRef := &virtv1.ClaimRequest{ClaimName: claimEntry, RequestName: kubeVirtRequestNameForAttachment(attachment)}
+func BuildVMI(name, namespace string, config *runconfig.KubeVirt, attachment, deviceName, claimEntry, claimName string, labels map[string]string) (*virtv1.VirtualMachineInstance, error) {
+	if err := validateDeviceCount(config, attachment); err != nil {
+		return nil, err
+	}
+	count, err := kubeVirtDeviceCount(config)
+	if err != nil {
+		return nil, err
+	}
 	devices := virtv1.Devices{
 		Disks: []virtv1.Disk{{Name: "rootdisk", DiskDevice: virtv1.DiskDevice{Disk: &virtv1.DiskTarget{Bus: virtv1.DiskBusVirtio}}}},
 	}
@@ -258,13 +278,14 @@ func BuildVMI(name, namespace string, config *runconfig.KubeVirt, attachment, de
 	var cpu *virtv1.CPU
 	switch attachment {
 	case runconfig.KubeVirtAttachmentHostDevice:
-		devices.HostDevices = []virtv1.HostDevice{{Name: deviceName, ClaimRequest: claimRef}}
+		devices.HostDevices = kubeVirtHostDevices(deviceName, claimEntry, kubeVirtRequestNamesForAttachment(attachment, count))
 	case runconfig.KubeVirtAttachmentGPU:
-		devices.GPUs = []virtv1.GPU{{Name: deviceName, ClaimRequest: claimRef}}
+		devices.GPUs = kubeVirtGPUs(deviceName, claimEntry, kubeVirtRequestNamesForAttachment(attachment, count))
 	case runconfig.KubeVirtAttachmentCPU:
 		cpu = &virtv1.CPU{Cores: 1, DedicatedCPUPlacement: true}
 		annotations = map[string]string{"kubevirt.io/dra-manual-claim": claimEntry}
 	case runconfig.KubeVirtAttachmentNetwork:
+		claimRef := &virtv1.ClaimRequest{ClaimName: claimEntry, RequestName: kubeVirtRequestNamesForAttachment(attachment, count)[0]}
 		networks = []virtv1.Network{
 			{Name: "default", NetworkSource: virtv1.NetworkSource{Pod: &virtv1.PodNetwork{}}},
 			{Name: deviceName, NetworkSource: virtv1.NetworkSource{ResourceClaim: claimRef}},
@@ -295,7 +316,7 @@ func BuildVMI(name, namespace string, config *runconfig.KubeVirt, attachment, de
 			Networks:       networks,
 			ResourceClaims: []virtv1.VirtualMachineInstanceResourceClaim{{Name: claimEntry, ResourceClaimName: stringPtr(claimName)}},
 		},
-	}
+	}, nil
 }
 
 func kubeVirtFeatureGate(attachment string) (string, bool) {
@@ -313,18 +334,74 @@ func kubeVirtFeatureGate(attachment string) (string, bool) {
 	}
 }
 
-func kubeVirtRequestName(driverName, deviceClass string) string {
+func kubeVirtRequestNames(driverName, deviceClass string, count int) []string {
 	if driverName == "cpu" || deviceClass == "dra.cpu" {
-		return cpuRequestName
+		return []string{cpuRequestName}
 	}
-	return "device"
+	return kubeVirtRequestNamesForAttachment(runconfig.KubeVirtAttachmentGPU, count)
 }
 
-func kubeVirtRequestNameForAttachment(attachment string) string {
+func kubeVirtRequestNamesForAttachment(attachment string, count int) []string {
 	if attachment == runconfig.KubeVirtAttachmentCPU {
-		return cpuRequestName
+		return []string{cpuRequestName}
 	}
-	return "device"
+	if count == 1 {
+		return []string{"device"}
+	}
+	requests := make([]string, count)
+	for i := range requests {
+		requests[i] = fmt.Sprintf("device-%d", i)
+	}
+	return requests
+}
+
+func kubeVirtDeviceCount(config *runconfig.KubeVirt) (int, error) {
+	count := 1
+	if config != nil && config.DeviceCount != 0 {
+		count = config.DeviceCount
+	}
+	if count < 1 {
+		return 0, fmt.Errorf("kubevirt deviceCount must be greater than zero")
+	}
+	return count, nil
+}
+
+func validateDeviceCount(config *runconfig.KubeVirt, attachment string) error {
+	count, err := kubeVirtDeviceCount(config)
+	if err != nil {
+		return err
+	}
+	if count > 1 && attachment != runconfig.KubeVirtAttachmentGPU && attachment != runconfig.KubeVirtAttachmentHostDevice {
+		return fmt.Errorf("kubevirt deviceCount greater than one is only supported for gpu or hostDevice attachments")
+	}
+	return nil
+}
+
+func kubeVirtDeviceNames(base string, count int) []string {
+	if count == 1 {
+		return []string{base}
+	}
+	names := make([]string, count)
+	for i := range names {
+		names[i] = fmt.Sprintf("%s-%d", base, i)
+	}
+	return names
+}
+
+func kubeVirtGPUs(base, claimEntry string, requestNames []string) []virtv1.GPU {
+	devices := make([]virtv1.GPU, len(requestNames))
+	for i, name := range kubeVirtDeviceNames(base, len(requestNames)) {
+		devices[i] = virtv1.GPU{Name: name, ClaimRequest: &virtv1.ClaimRequest{ClaimName: claimEntry, RequestName: requestNames[i]}}
+	}
+	return devices
+}
+
+func kubeVirtHostDevices(base, claimEntry string, requestNames []string) []virtv1.HostDevice {
+	devices := make([]virtv1.HostDevice, len(requestNames))
+	for i, name := range kubeVirtDeviceNames(base, len(requestNames)) {
+		devices[i] = virtv1.HostDevice{Name: name, ClaimRequest: &virtv1.ClaimRequest{ClaimName: claimEntry, RequestName: requestNames[i]}}
+	}
+	return devices
 }
 
 func kubeVirtClaimCapacity(config *runconfig.KubeVirt, driverName, deviceClass string) (map[resourcev1.QualifiedName]resource.Quantity, error) {

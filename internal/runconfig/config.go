@@ -42,10 +42,14 @@ const (
 // secrets must already be available to the target cluster; the harness never
 // creates cluster-wide KubeVirt configuration or guest credentials.
 type KubeVirt struct {
-	Namespace     string         `yaml:"namespace"`
-	Image         string         `yaml:"image"`
-	Attachment    string         `yaml:"attachment"`
-	DeviceName    string         `yaml:"deviceName"`
+	Namespace  string `yaml:"namespace"`
+	Image      string `yaml:"image"`
+	Attachment string `yaml:"attachment"`
+	DeviceName string `yaml:"deviceName"`
+	// DeviceCount controls how many DRA requests and matching KubeVirt
+	// devices are placed in the workload. Zero preserves the single-device
+	// default for backward compatibility.
+	DeviceCount   int            `yaml:"deviceCount"`
 	Selector      string         `yaml:"selector"`
 	ClaimConfig   *KubeVirtClaim `yaml:"claimConfig"`
 	AllowExisting bool           `yaml:"allowExisting"`
@@ -249,6 +253,9 @@ func (c *Config) Validate() error {
 			if c.KubeVirt.HoldAfterReadySeconds < 0 {
 				problems = append(problems, errors.New("kubevirt holdAfterReadySeconds must not be negative"))
 			}
+			if c.KubeVirt.DeviceCount < 0 {
+				problems = append(problems, errors.New("kubevirt deviceCount must not be negative"))
+			}
 			if c.KubeVirt.Image == "" {
 				problems = append(problems, errors.New("kubevirt workload requires image"))
 			}
@@ -272,6 +279,9 @@ func (c *Config) Validate() error {
 			case KubeVirtAttachmentGPU, KubeVirtAttachmentHostDevice, KubeVirtAttachmentCPU, KubeVirtAttachmentNetwork:
 			default:
 				problems = append(problems, fmt.Errorf("unsupported kubevirt attachment %q (use gpu, hostDevice, cpu, or network)", c.KubeVirt.Attachment))
+			}
+			if c.KubeVirt.DeviceCount > 1 && c.KubeVirt.Attachment != KubeVirtAttachmentGPU && c.KubeVirt.Attachment != KubeVirtAttachmentHostDevice {
+				problems = append(problems, fmt.Errorf("kubevirt deviceCount greater than one is only supported for gpu or hostDevice attachments"))
 			}
 			if c.KubeVirt.Namespace != "" && len(validation.IsDNS1123Label(c.KubeVirt.Namespace)) > 0 {
 				problems = append(problems, errors.New("kubevirt namespace must be a DNS label"))

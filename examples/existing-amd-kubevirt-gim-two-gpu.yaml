@@ -1,0 +1,21 @@
+# Allocate two GIM VFIO VFs from one ResourceClaim and attach both to one VMI.
+# The KubeVirt cluster must have GPUsWithDRA enabled and IOMMUFD configured.
+existing: true
+workload: kubevirt
+kubevirt:
+  allowExisting: true
+  namespace: dra-kubevirt-gim-two-gpu
+  image: quay.io/containerdisks/fedora:42
+  attachment: gpu
+  deviceCount: 2
+  selector: 'device.attributes["gpu.amd.com"].type == "vfio"'
+  claimConfig:
+    driver: gpu.amd.com
+    parameters:
+      apiVersion: gpu.resource.amd.com/v1alpha1
+      kind: VfioDeviceConfig
+      iommu:
+        backendPolicy: RequireIommuFD
+drivers:
+  - name: amd
+    namespace: dra-pr122-vfio-lifecycle

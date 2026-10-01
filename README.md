@@ -212,6 +212,12 @@ Set `kubevirt.allowExisting: true`; this permits the harness to create and
 remove only its temporary workload resources. It does not unbind PCI devices,
 rebind PFs, or change the installed driver.
 
+For a single VMI with multiple GPUs, set `kubevirt.deviceCount` to a value
+greater than one. The harness creates one ResourceClaim with deterministic
+requests (`device-0`, `device-1`, and so on) and attaches each request to a
+separate KubeVirt GPU or HostDevice entry. See
+[examples/existing-amd-kubevirt-gim-two-gpu.yaml](examples/existing-amd-kubevirt-gim-two-gpu.yaml).
+
 `selector` and `claimConfig` can express driver-specific allocation, such as a
 pre-bound AMD GIM VFIO VF:
 

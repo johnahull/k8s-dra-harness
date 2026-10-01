@@ -275,6 +275,29 @@ func TestKubeVirtVFIOClaimConfig(t *testing.T) {
 	}
 }
 
+func TestKubeVirtMultiDeviceConfig(t *testing.T) {
+	c := Config{
+		Workload: WorkloadKubeVirt,
+		KubeVirt: &KubeVirt{DeviceCount: 2, Image: "quay.io/containerdisks/fedora:latest"},
+		Drivers:  []Driver{{Name: "amd", Image: "quay.io/example/amd:dev", Chart: "oci://example/amd"}},
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	bad := c
+	bad.KubeVirt = &KubeVirt{DeviceCount: 2, Image: "quay.io/containerdisks/fedora:latest", Attachment: KubeVirtAttachmentCPU}
+	if err := bad.Validate(); err == nil || !strings.Contains(err.Error(), "only supported for gpu or hostDevice") {
+		t.Fatalf("Validate() = %v, want unsupported multi-device attachment error", err)
+	}
+
+	bad = c
+	bad.KubeVirt = &KubeVirt{DeviceCount: -1, Image: "quay.io/containerdisks/fedora:latest"}
+	if err := bad.Validate(); err == nil || !strings.Contains(err.Error(), "deviceCount must not be negative") {
+		t.Fatalf("Validate() = %v, want negative deviceCount error", err)
+	}
+}
+
 func TestKubeVirtRejectsExistingOptInWithoutExistingMode(t *testing.T) {
 	c := Config{
 		Workload: WorkloadKubeVirt,
