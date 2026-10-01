@@ -366,6 +366,8 @@ adapter, and add it to the supplied adapter set. See
 
 ## Documentation
 
+- [Container workflow](docs/container-workflow.md) - build and run the
+  client-side harness image with mounted configurations and evidence.
 - [User guide](docs/user-guide.md) — complete setup, configuration, safety,
   KubeVirt, operators, test plans, verification, and troubleshooting.
 - [Adapter authoring](docs/adapter-authoring.md) — extend the built-in driver

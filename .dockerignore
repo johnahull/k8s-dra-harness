@@ -1,0 +1,14 @@
+.git
+.github
+.idea
+.vscode
+.codex
+.cache
+coverage.out
+reports
+results
+tmp
+*.log
+*.junit.xml
+*.tar
+*.tar.gz

@@ -1,11 +1,15 @@
 export GO111MODULE=on
 MODULE := github.com/johnahull/k8s-dra-harness
 GO_PACKAGES = $(shell go list -tags=integration ./... | grep -v /vendor/)
+CONTAINER_TOOL ?= podman
+IMAGE ?= quay.io/johnahull/k8s-dra-harness
+IMAGE_TAG ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
+CONTAINER_IMAGE := $(IMAGE):$(IMAGE_TAG)
 # Packages under tests/ are Ginkgo suites that need a cluster; unit-test skips them.
 TEST ?= ...
 ARGS ?=
 
-.PHONY: help vet lint verify deps-update unit-test install-ginkgo run-tests
+.PHONY: help vet lint verify deps-update unit-test install-ginkgo run-tests container-build container-push
 
 help: ## Show available make targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -29,3 +33,9 @@ install-ginkgo: ## Install the ginkgo CLI
 
 run-tests: ## Run Ginkgo suites (TEST_FEATURES required)
 	scripts/test-runner.sh $(ARGS)
+
+container-build: ## Build the client-side harness image
+	$(CONTAINER_TOOL) build -f Containerfile -t $(CONTAINER_IMAGE) .
+
+container-push: ## Push the client-side harness image
+	$(CONTAINER_TOOL) push $(CONTAINER_IMAGE)
