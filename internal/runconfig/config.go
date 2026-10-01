@@ -378,7 +378,8 @@ func (c *Config) Validate() error {
 		}
 		validScenarios := map[string]bool{
 			"resource-slices": true, "counters": true, "sibling-exclusion": true,
-			"capacity": true, "release": true, "restart": true, "topology": true,
+			"sibling-exclusion-reverse": true, "alternate-device": true,
+			"capacity": true, "release": true, "release-orders": true, "restart": true, "restart-active": true, "topology": true,
 		}
 		hasAMDDriver := false
 		for _, driver := range c.Drivers {

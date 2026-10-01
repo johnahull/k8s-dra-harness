@@ -362,6 +362,23 @@ func TestTestPlanValidation(t *testing.T) {
 		})
 	}
 }
+func TestTestPlanSupportsExtendedScenarios(t *testing.T) {
+	c := Config{
+		Drivers: []Driver{{
+			Name:  "amd",
+			Image: "quay.io/user/amd:dev",
+			Chart: "oci://example/amd",
+		}},
+		TestPlan: &TestPlan{
+			Profile:   "extended",
+			Scenarios: []string{"sibling-exclusion-reverse", "alternate-device", "release-orders", "restart-active"},
+			Lifecycle: TestPlanLifecycle{AllowWorkloads: true},
+		},
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate() unexpectedly failed: %v", err)
+	}
+}
 
 func TestTestPlanRejectsKubeVirt(t *testing.T) {
 	c := Config{
