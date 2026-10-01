@@ -1,0 +1,24 @@
+existing: true
+cleanup: false
+namespace: dra-pr91-direct-vfio-amdgpu
+drivers:
+  - name: amd
+    namespace: dra-pr122-vfio-lifecycle
+testPlan:
+  profile: pr-91-direct-vfio-amdgpu
+  scenarios:
+    - release
+  selector: 'device.attributes["gpu.amd.com"].type == "vfio"'
+  claimConfig:
+    driver: gpu.amd.com
+    parameters:
+      apiVersion: gpu.resource.amd.com/v1alpha1
+      kind: VfioDeviceConfig
+      iommu:
+        backendPolicy: LegacyOnly
+  lifecycle:
+    allowWorkloads: true
+  verification:
+    scriptsDir: /home/jhull/dra-test-work/dra-topology-aware-co-placement/testing/scripts
+    expectedRepoCommit: 3c4c346e278fdf132d361e41a223bb86ba169fd0
+    evidenceDir: /home/jhull/dra-test-work/evidence/pr91/non-gim-direct-vfio

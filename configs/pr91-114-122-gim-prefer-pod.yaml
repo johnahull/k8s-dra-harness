@@ -1,0 +1,27 @@
+existing: true
+cleanup: false
+namespace: dra-pr91-114-122-gim-prefer-pod
+drivers:
+  - name: amd
+    namespace: dra-pr122-vfio-lifecycle
+testPlan:
+  profile: pr-91-114-122-gim-prefer-pod
+  selector: 'device.attributes["gpu.amd.com"].type == "vfio"'
+  claimConfig:
+    requests: [device]
+    driver: gpu.amd.com
+    parameters:
+      apiVersion: gpu.resource.amd.com/v1alpha1
+      kind: VfioDeviceConfig
+      iommu:
+        backendPolicy: PreferIommuFD
+  scenarios:
+    - resource-slices
+    - release
+    - release
+  lifecycle:
+    allowWorkloads: true
+  verification:
+    scriptsDir: /home/jhull/dra-test-work/dra-topology-aware-co-placement/testing/scripts
+    expectedRepoCommit: 3c4c346e278fdf132d361e41a223bb86ba169fd0
+    evidenceDir: /home/jhull/dra-test-work/evidence/pr91-114-122-gim/prefer-pod

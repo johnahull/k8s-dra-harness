@@ -1,0 +1,25 @@
+existing: true
+cleanup: false
+namespace: dra-pr91-extended-amdgpu
+drivers:
+  - name: amd
+    namespace: dra-pr122-vfio-lifecycle
+    podSelector: app.kubernetes.io/instance=dra-pr122-vfio-lifecycle
+testPlan:
+  profile: pr-91-extended-amdgpu
+  scenarios:
+    - resource-slices
+    - counters
+    - sibling-exclusion
+    - sibling-exclusion-reverse
+    - alternate-device
+    - release-orders
+    - restart
+  selector: 'device.attributes["gpu.amd.com"].type == "amdgpu"'
+  lifecycle:
+    allowWorkloads: true
+    allowRestart: true
+  verification:
+    scriptsDir: /home/jhull/dra-test-work/dra-topology-aware-co-placement/testing/scripts
+    expectedRepoCommit: 5db44ee1ed94133b4fea6752bacef31885dbd06a
+    evidenceDir: /home/jhull/dra-test-work/evidence/pr91-114-122/non-gim-extended

@@ -1,0 +1,14 @@
+existing: true
+cleanup: false
+namespace: dra-pr91-gim-harness
+drivers:
+  - name: amd
+    namespace: dra-pr91-gim
+testPlan:
+  profile: pr-91-kep4815-gim-existing-resource
+  scenarios:
+    - resource-slices
+  verification:
+    scriptsDir: /home/jhull/dra-test-work/dra-topology-aware-co-placement/testing/scripts
+    expectedRepoCommit: 3c4c346e278fdf132d361e41a223bb86ba169fd0
+    evidenceDir: /home/jhull/dra-test-work/evidence/pr91-gim-existing-resource

@@ -1,0 +1,34 @@
+existing: true
+cleanup: false
+namespace: dra-pr114-122-amdgpu-multidevice
+drivers:
+  - name: amd
+    namespace: dra-pr122-vfio-lifecycle
+testPlan:
+  profile: pr-114-122-amdgpu-multidevice-iommufd
+  claimConfig:
+    requests: [gpu0, gpu1]
+    driver: gpu.amd.com
+    parameters:
+      apiVersion: gpu.resource.amd.com/v1alpha1
+      kind: VfioDeviceConfig
+      iommu:
+        backendPolicy: RequireIommuFD
+  scenarios:
+    - topology
+  lifecycle:
+    allowWorkloads: true
+  topology:
+    - name: two-amdgpu
+      expected: success
+      requests:
+        - name: gpu0
+          deviceClass: gpu.amd.com
+          selector: 'device.attributes["gpu.amd.com"].type == "amdgpu"'
+        - name: gpu1
+          deviceClass: gpu.amd.com
+          selector: 'device.attributes["gpu.amd.com"].type == "amdgpu"'
+  verification:
+    scriptsDir: /home/jhull/dra-test-work/dra-topology-aware-co-placement/testing/scripts
+    expectedRepoCommit: 3c4c346e278fdf132d361e41a223bb86ba169fd0
+    evidenceDir: /home/jhull/dra-test-work/evidence/pr114-122/non-gim-multidevice

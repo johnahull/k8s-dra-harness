@@ -1,0 +1,19 @@
+namespace: dra-harness-pr91-gim
+cleanup: true
+drivers:
+  - name: amd
+    image: localhost/k8s-gpu-dra-driver:pr91-a000c9c
+    chart: /home/jhull/dra-test-work/charts/pr91-gim-a000c9c
+    values:
+      image:
+        pullPolicy: Never
+      featureGates:
+        VFIOPassthrough: true
+testPlan:
+  profile: pr-91-kep4815-gim-resource
+  scenarios:
+    - resource-slices
+  verification:
+    scriptsDir: /home/jhull/dra-test-work/dra-topology-aware-co-placement/testing/scripts
+    expectedRepoCommit: 3c4c346e278fdf132d361e41a223bb86ba169fd0
+    evidenceDir: /home/jhull/dra-test-work/evidence/pr91-gim-resource

@@ -1,0 +1,19 @@
+existing: true
+workload: kubevirt
+kubevirt:
+  allowExisting: true
+  namespace: dra-pr91-114-122-gim-require
+  image: quay.io/containerdisks/fedora:42
+  attachment: gpu
+  holdAfterReadySeconds: 45
+  selector: 'device.attributes["gpu.amd.com"].type == "vfio"'
+  claimConfig:
+    driver: gpu.amd.com
+    parameters:
+      apiVersion: gpu.resource.amd.com/v1alpha1
+      kind: VfioDeviceConfig
+      iommu:
+        backendPolicy: RequireIommuFD
+drivers:
+  - name: amd
+    namespace: dra-pr122-vfio-lifecycle

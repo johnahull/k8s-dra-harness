@@ -97,10 +97,16 @@ func (r *Runner) Run(ctx context.Context, targets []DriverTarget) (runErr error)
 			err = r.counters(ctx)
 		case "sibling-exclusion":
 			err = r.siblingExclusion(ctx)
+		case "sibling-exclusion-reverse":
+			err = r.siblingExclusionOrder(ctx, true)
+		case "alternate-device":
+			err = r.alternateDevice(ctx)
 		case "capacity":
 			err = r.capacity(ctx)
 		case "release":
 			err = r.release(ctx)
+		case "release-orders":
+			err = r.releaseOrders(ctx)
 		case "topology":
 			err = r.topology(ctx)
 		case "restart":
@@ -109,6 +115,12 @@ func (r *Runner) Run(ctx context.Context, targets []DriverTarget) (runErr error)
 			} else {
 				err = r.restart(ctx, targets)
 			}
+		case "restart-active":
+			if !r.config.Lifecycle.AllowRestart {
+				err = errors.New("test plan restart-active requires lifecycle.allowRestart: true")
+			} else {
+				err = r.restartActive(ctx, targets)
+			}
 		default:
 			err = fmt.Errorf("unsupported test plan scenario %q", scenario)
 		}
@@ -116,7 +128,7 @@ func (r *Runner) Run(ctx context.Context, targets []DriverTarget) (runErr error)
 			return fmt.Errorf("scenario %s: %w", scenario, err)
 		}
 		switch scenario {
-		case "sibling-exclusion", "capacity", "release":
+		case "sibling-exclusion", "sibling-exclusion-reverse", "alternate-device", "capacity", "release", "release-orders":
 			if _, err := r.snapshot(ctx, scenario); err != nil {
 				return fmt.Errorf("capturing %s evidence: %w", scenario, err)
 			}
@@ -275,6 +287,10 @@ func (r *Runner) runTopologyCase(ctx context.Context, topology runconfig.Topolog
 }
 
 func (r *Runner) siblingExclusion(ctx context.Context) error {
+	return r.siblingExclusionOrder(ctx, false)
+}
+
+func (r *Runner) siblingExclusionOrder(ctx context.Context, reverse bool) error {
 	const class = "gpu.amd.com"
 	if _, err := r.clients.K8s.ResourceV1().DeviceClasses().Get(ctx, class, metav1.GetOptions{}); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -282,10 +298,17 @@ func (r *Runner) siblingExclusion(ctx context.Context) error {
 		}
 		return err
 	}
-	firstClaim := r.name("sibling-compute-claim")
-	firstPod := r.name("sibling-compute-pod")
-	compute := "device.attributes[\"gpu.amd.com\"].type == 'amdgpu'"
-	claim, pod, err := r.createSelectedConsumer(ctx, firstClaim, firstPod, class, compute)
+	firstType := "compute"
+	firstSelector := "device.attributes[\"gpu.amd.com\"].type == 'amdgpu'"
+	secondType := "vfio"
+	secondSelector := "device.attributes[\"gpu.amd.com\"].type == 'vfio'"
+	if reverse {
+		firstType, secondType = secondType, firstType
+		firstSelector, secondSelector = secondSelector, firstSelector
+	}
+	firstClaim := r.name("sibling-" + firstType + "-claim")
+	firstPod := r.name("sibling-" + firstType + "-pod")
+	claim, pod, err := r.createSelectedConsumer(ctx, firstClaim, firstPod, class, firstSelector)
 	if err != nil {
 		return err
 	}
@@ -299,9 +322,9 @@ func (r *Runner) siblingExclusion(ctx context.Context) error {
 	if pci == "" {
 		return errors.New("sibling-exclusion could not find a PCI identity for the allocated compute device")
 	}
-	secondClaim := r.name("sibling-vfio-claim")
-	secondPod := r.name("sibling-vfio-pod")
-	vfio := "device.attributes[\"gpu.amd.com\"].type == 'vfio'"
+	secondClaim := r.name("sibling-" + secondType + "-claim")
+	secondPod := r.name("sibling-" + secondType + "-pod")
+	vfio := secondSelector
 	if pci != "" {
 		vfio += " && " + pciExpression(pci)
 	}
@@ -311,6 +334,38 @@ func (r *Runner) siblingExclusion(ctx context.Context) error {
 	}
 	if err := r.waitPending(ctx, secondConsumer, second); err != nil {
 		return err
+	}
+	return nil
+}
+
+func (r *Runner) alternateDevice(ctx context.Context) error {
+	const class = "gpu.amd.com"
+	compute := "device.attributes[\"gpu.amd.com\"].type == 'amdgpu'"
+	vfio := "device.attributes[\"gpu.amd.com\"].type == 'vfio'"
+	firstClaim, firstPod, err := r.createSelectedConsumer(ctx, r.name("alternate-compute-claim"), r.name("alternate-compute-pod"), class, compute)
+	if err != nil {
+		return err
+	}
+	if err := r.waitAllocated(ctx, firstPod, []string{firstClaim}); err != nil {
+		return err
+	}
+	firstPCI, err := r.allocatedPCI(ctx, firstClaim)
+	if err != nil {
+		return err
+	}
+	secondClaim, secondPod, err := r.createSelectedConsumer(ctx, r.name("alternate-vfio-claim"), r.name("alternate-vfio-pod"), class, vfio)
+	if err != nil {
+		return err
+	}
+	if err := r.waitAllocated(ctx, secondPod, []string{secondClaim}); err != nil {
+		return fmt.Errorf("allocating alternate VFIO device: %w", err)
+	}
+	secondPCI, err := r.allocatedPCI(ctx, secondClaim)
+	if err != nil {
+		return err
+	}
+	if firstPCI != "" && firstPCI == secondPCI {
+		return fmt.Errorf("alternate VFIO claim selected the compute sibling at %s", firstPCI)
 	}
 	return nil
 }
@@ -331,6 +386,61 @@ func (r *Runner) release(ctx context.Context) error {
 	}
 	if err := r.deletePodAndWait(ctx, pod, []string{claim}); err != nil {
 		return err
+	}
+	return nil
+}
+
+func (r *Runner) releaseOrders(ctx context.Context) error {
+	const class = "gpu.amd.com"
+	compute := "device.attributes[\"gpu.amd.com\"].type == 'amdgpu'"
+	for order := 0; order < 2; order++ {
+		firstClaim, firstPod, err := r.createSelectedConsumer(ctx, r.name(fmt.Sprintf("release-order-%d-first-claim", order)), r.name(fmt.Sprintf("release-order-%d-first-pod", order)), class, compute)
+		if err != nil {
+			return err
+		}
+		if err := r.waitAllocated(ctx, firstPod, []string{firstClaim}); err != nil {
+			return err
+		}
+		secondClaim, secondPod, err := r.createSelectedConsumer(ctx, r.name(fmt.Sprintf("release-order-%d-second-claim", order)), r.name(fmt.Sprintf("release-order-%d-second-pod", order)), class, compute)
+		if err != nil {
+			return err
+		}
+		if err := r.waitAllocated(ctx, secondPod, []string{secondClaim}); err != nil {
+			return err
+		}
+		firstPCI, err := r.allocatedPCI(ctx, firstClaim)
+		if err != nil {
+			return err
+		}
+		secondPCI, err := r.allocatedPCI(ctx, secondClaim)
+		if err != nil {
+			return err
+		}
+		if firstPCI != "" && firstPCI == secondPCI {
+			return fmt.Errorf("release-order claims selected the same PCI identity %s", firstPCI)
+		}
+
+		if order == 0 {
+			if err := r.deletePodAndWait(ctx, firstPod, []string{firstClaim}); err != nil {
+				return fmt.Errorf("releasing first claim in A-then-B order: %w", err)
+			}
+			if err := r.waitAllocated(ctx, secondPod, []string{secondClaim}); err != nil {
+				return fmt.Errorf("second claim was disturbed by A-then-B release: %w", err)
+			}
+			if err := r.deletePodAndWait(ctx, secondPod, []string{secondClaim}); err != nil {
+				return err
+			}
+		} else {
+			if err := r.deletePodAndWait(ctx, secondPod, []string{secondClaim}); err != nil {
+				return fmt.Errorf("releasing second claim in B-then-A order: %w", err)
+			}
+			if err := r.waitAllocated(ctx, firstPod, []string{firstClaim}); err != nil {
+				return fmt.Errorf("first claim was disturbed by B-then-A release: %w", err)
+			}
+			if err := r.deletePodAndWait(ctx, firstPod, []string{firstClaim}); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
@@ -399,6 +509,48 @@ func (r *Runner) capacity(ctx context.Context) error {
 }
 
 func (r *Runner) restart(ctx context.Context, targets []DriverTarget) error {
+	if err := r.restartDrivers(ctx, targets); err != nil {
+		return err
+	}
+	return r.resourceSlices(ctx)
+}
+
+func (r *Runner) restartActive(ctx context.Context, targets []DriverTarget) error {
+	const class = "gpu.amd.com"
+	claim, pod, err := r.createSelectedConsumer(ctx, r.name("restart-active-claim"), r.name("restart-active-pod"), class, "device.attributes[\"gpu.amd.com\"].type == 'amdgpu'")
+	if err != nil {
+		return err
+	}
+	if err := r.waitAllocated(ctx, pod, []string{claim}); err != nil {
+		return err
+	}
+	before, err := r.allocatedPCI(ctx, claim)
+	if err != nil {
+		return err
+	}
+	if err := r.restartDrivers(ctx, targets); err != nil {
+		return err
+	}
+	if err := r.waitAllocated(ctx, pod, []string{claim}); err != nil {
+		return fmt.Errorf("active claim was not preserved across restart: %w", err)
+	}
+	after, err := r.allocatedPCI(ctx, claim)
+	if err != nil {
+		return err
+	}
+	if before != "" && after != before {
+		return fmt.Errorf("active claim changed PCI identity across restart: before %s, after %s", before, after)
+	}
+	if err := r.resourceSlices(ctx); err != nil {
+		return fmt.Errorf("verifying ResourceSlices after active restart: %w", err)
+	}
+	if err := r.deletePodAndWait(ctx, pod, []string{claim}); err != nil {
+		return fmt.Errorf("releasing active claim after restart: %w", err)
+	}
+	return nil
+}
+
+func (r *Runner) restartDrivers(ctx context.Context, targets []DriverTarget) error {
 	if len(targets) == 0 {
 		return errors.New("restart scenario has no driver targets")
 	}
@@ -441,7 +593,7 @@ func (r *Runner) restart(ctx context.Context, targets []DriverTarget) error {
 			return fmt.Errorf("waiting for %s driver restart: %w", target.Name, err)
 		}
 	}
-	return r.resourceSlices(ctx)
+	return nil
 }
 
 func (r *Runner) createSelectedConsumer(ctx context.Context, claimName, podName, class, selector string) (string, string, error) {

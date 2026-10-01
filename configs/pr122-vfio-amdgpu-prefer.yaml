@@ -1,0 +1,24 @@
+existing: true
+cleanup: false
+namespace: dra-pr122-amdgpu-prefer
+drivers:
+  - name: amd
+    namespace: dra-pr122-vfio-lifecycle
+testPlan:
+  profile: pr-122-vfio-amdgpu-prefer-iommufd
+  scenarios:
+    - release
+  selector: 'device.attributes["gpu.amd.com"].type == "amdgpu"'
+  claimConfig:
+    driver: gpu.amd.com
+    parameters:
+      apiVersion: gpu.resource.amd.com/v1alpha1
+      kind: VfioDeviceConfig
+      iommu:
+        backendPolicy: PreferIommuFD
+  lifecycle:
+    allowWorkloads: true
+  verification:
+    scriptsDir: /home/jhull/dra-test-work/dra-topology-aware-co-placement/testing/scripts
+    expectedRepoCommit: 3c4c346e278fdf132d361e41a223bb86ba169fd0
+    evidenceDir: /home/jhull/dra-test-work/evidence/pr114-122/non-gim-prefer-iommufd
