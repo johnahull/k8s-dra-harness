@@ -4,6 +4,8 @@ kubevirt:
   allowExisting: true
   namespace: dra-pr91-114-122-gim-require
   image: quay.io/containerdisks/fedora:42
+  cpuModel: host-passthrough
+  networkBinding: masquerade
   attachment: gpu
   holdAfterReadySeconds: 45
   selector: 'device.attributes["gpu.amd.com"].type == "vfio"'

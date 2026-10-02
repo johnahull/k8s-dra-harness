@@ -40,5 +40,5 @@ testPlan:
           selector: 'device.attributes["gpu.amd.com"].type == "vfio"'
   verification:
     scriptsDir: /home/jhull/dra-test-work/dra-topology-aware-co-placement/testing/scripts
-    expectedRepoCommit: 3c4c346e278fdf132d361e41a223bb86ba169fd0
+    expectedRepoCommit: 62c8b9630eba9fbc338938c1364a9293ad69bfa4
     evidenceDir: /home/jhull/dra-test-work/evidence/pr91-114-122-gim/multidevice

@@ -46,6 +46,13 @@ type KubeVirt struct {
 	Image      string `yaml:"image"`
 	Attachment string `yaml:"attachment"`
 	DeviceName string `yaml:"deviceName"`
+	// CPUModel overrides KubeVirt's default CPU model for VM compatibility
+	// tests. host-passthrough is required when testing large PCI apertures.
+	CPUModel string `yaml:"cpuModel"`
+	// NetworkBinding selects the binding for the default pod network. An
+	// explicit masquerade binding avoids requiring a pod-network gateway when
+	// the test only needs the VM to boot.
+	NetworkBinding string `yaml:"networkBinding"`
 	// DeviceCount controls how many DRA requests and matching KubeVirt
 	// devices are placed in the workload. Zero preserves the single-device
 	// default for backward compatibility.
@@ -258,6 +265,12 @@ func (c *Config) Validate() error {
 			}
 			if c.KubeVirt.Image == "" {
 				problems = append(problems, errors.New("kubevirt workload requires image"))
+			}
+			if c.KubeVirt.CPUModel != "" && c.KubeVirt.CPUModel != "host-model" && c.KubeVirt.CPUModel != "host-passthrough" {
+				problems = append(problems, fmt.Errorf("unsupported kubevirt cpuModel %q (use host-model or host-passthrough)", c.KubeVirt.CPUModel))
+			}
+			if c.KubeVirt.NetworkBinding != "" && c.KubeVirt.NetworkBinding != "bridge" && c.KubeVirt.NetworkBinding != "masquerade" {
+				problems = append(problems, fmt.Errorf("unsupported kubevirt networkBinding %q (use bridge or masquerade)", c.KubeVirt.NetworkBinding))
 			}
 			if c.KubeVirt.AllowExisting && !c.Existing {
 				problems = append(problems, errors.New("kubevirt allowExisting requires existing: true"))

@@ -295,6 +295,16 @@ func BuildVMI(name, namespace string, config *runconfig.KubeVirt, attachment, de
 			{Name: deviceName, InterfaceBindingMethod: virtv1.InterfaceBindingMethod{SRIOV: &virtv1.InterfaceSRIOV{}}},
 		}
 	}
+	if config.CPUModel != "" {
+		if cpu == nil {
+			cpu = &virtv1.CPU{Cores: 1}
+		}
+		cpu.Model = config.CPUModel
+	}
+	if config.NetworkBinding == "masquerade" && attachment != runconfig.KubeVirtAttachmentNetwork {
+		networks = []virtv1.Network{{Name: "default", NetworkSource: virtv1.NetworkSource{Pod: &virtv1.PodNetwork{}}}}
+		devices.Interfaces = []virtv1.Interface{{Name: "default", InterfaceBindingMethod: virtv1.InterfaceBindingMethod{Masquerade: &virtv1.InterfaceMasquerade{}}}}
+	}
 	volumes := []virtv1.Volume{{Name: "rootdisk", VolumeSource: virtv1.VolumeSource{ContainerDisk: &virtv1.ContainerDiskSource{Image: config.Image}}}}
 	if config.CloudInitSecret != "" {
 		volumes = append(volumes, virtv1.Volume{Name: "cloudinit", VolumeSource: virtv1.VolumeSource{CloudInitNoCloud: &virtv1.CloudInitNoCloudSource{

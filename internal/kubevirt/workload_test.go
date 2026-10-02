@@ -139,6 +139,26 @@ func TestBuildVMIRejectsMultiDeviceCPU(t *testing.T) {
 		t.Fatal("BuildVMI accepted multi-device CPU workload")
 	}
 }
+func TestBuildVMIApertureTestOptions(t *testing.T) {
+	config := &runconfig.KubeVirt{
+		Image:          "example/image",
+		CPUModel:       "host-passthrough",
+		NetworkBinding: "masquerade",
+	}
+	vmi, err := BuildVMI("test-vmi", "test", config, runconfig.KubeVirtAttachmentGPU, "amd", "amd", "claim", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vmi.Spec.Domain.CPU == nil || vmi.Spec.Domain.CPU.Model != "host-passthrough" {
+		t.Fatalf("CPU model = %+v, want host-passthrough", vmi.Spec.Domain.CPU)
+	}
+	if len(vmi.Spec.Networks) != 1 || vmi.Spec.Networks[0].Pod == nil {
+		t.Fatalf("unexpected networks: %+v", vmi.Spec.Networks)
+	}
+	if len(vmi.Spec.Domain.Devices.Interfaces) != 1 || vmi.Spec.Domain.Devices.Interfaces[0].Masquerade == nil {
+		t.Fatalf("unexpected interfaces: %+v", vmi.Spec.Domain.Devices.Interfaces)
+	}
+}
 
 func TestBuildVFIOClaim(t *testing.T) {
 	claim, err := BuildClaim(testClaimName, "test", &runconfig.KubeVirt{
